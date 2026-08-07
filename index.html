@@ -105,11 +105,13 @@
   .import-summary .chip .n { font-size: 18px; font-weight: 700; display: block; }
   .chip.ok { background: var(--green-light); color: var(--green); }
   .chip.err { background: var(--red-light); color: var(--red); }
+  .chip.dup { background: var(--amber-light); color: var(--amber); }
   .chip.total { background: #eee; color: #333; }
 
   .import-table-wrap { max-height: 320px; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; }
   .import-table th, .import-table td { padding: 5px 6px; font-size: 11.5px; white-space: nowrap; }
   .import-table tr.row-err { background: var(--red-light); }
+  .import-table tr.row-dup { background: var(--amber-light); }
   .import-table tr.row-ok { background: white; }
   .row-status { font-size: 11px; font-weight: 700; }
   .row-status.ok { color: var(--green); }
@@ -149,10 +151,11 @@
 
 <div class="panel">
   <h2>📥 Toplu Aktarma (Excel / CSV)</h2>
-  <div class="hint">Çok sayıda GELEN/İADE hareketini tek seferde aktarın. Önce şablonu indirin, doldurun, sonra buraya yükleyin. Yüklenen dosya önce önizlemede gösterilir, hatalı satırlar aktarılmaz.</div>
+  <div class="hint">Çok sayıda GELEN/İADE hareketini tek seferde aktarın. Önce şablonu indirin, doldurun, sonra buraya yükleyin. Yüklenen dosya önce önizlemede gösterilir, hatalı satırlar aktarılmaz. Sistemde zaten var görünen (mükerrer) satırlar da otomatik ayrıca işaretlenir ve aktarılmaz.</div>
 
-  <div style="display:flex; gap:8px; margin-bottom:10px;">
+  <div style="display:flex; gap:8px; margin-bottom:10px; flex-wrap:wrap;">
     <button type="button" class="submit-btn secondary" style="width:auto; padding:8px 14px; font-size:13px;" onclick="sablonIndir()">⬇️ Şablon İndir (.xlsx)</button>
+    <button type="button" class="submit-btn secondary" style="width:auto; padding:8px 14px; font-size:13px; border-color:var(--amber); color:var(--amber);" onclick="mevcutVeriyiYedekle()">💾 Önce Mevcut Veriyi Yedekle</button>
   </div>
 
   <label for="topluDosya" style="display:block;">
@@ -168,6 +171,7 @@
     <div class="import-summary">
       <div class="chip total"><span class="n" id="importToplamN">0</span>Toplam satır</div>
       <div class="chip ok"><span class="n" id="importOkN">0</span>Geçerli</div>
+      <div class="chip dup"><span class="n" id="importDupN">0</span>Yinelenen</div>
       <div class="chip err"><span class="n" id="importErrN">0</span>Hatalı</div>
     </div>
     <div class="import-table-wrap">
@@ -178,7 +182,8 @@
         <tbody id="importTableBody"></tbody>
       </table>
     </div>
-    <button class="submit-btn excel" style="margin-top:10px;" onclick="topluIceAktar()">✅ Geçerli Satırları İçe Aktar</button>
+    <button class="submit-btn excel" style="margin-top:10px;" onclick="topluIceAktar(false)">✅ Geçerli Satırları İçe Aktar</button>
+    <button class="submit-btn secondary" style="font-size:12px; color:var(--amber); border-color:var(--amber);" onclick="topluIceAktar(true)">⚠️ Yinelenenleri de dahil et ve aktar</button>
     <button class="submit-btn secondary" onclick="importIptal()">İptal / Temizle</button>
   </div>
 </div>
@@ -239,6 +244,12 @@
   </div>
   <div id="iadeHintGrup" style="display:none;">
     <div class="fifo-warn" style="background:var(--green-light); color:var(--green);">↺ Bu iade, seçilen firma/ürün için en eski gelen kayıttan (kabul/fatura bilgisiyle) FIFO mantığıyla otomatik düşülecek.</div>
+    <div class="form-row full" style="margin-top:8px;">
+      <div>
+        <label>Fiş / Fatura No <span style="font-weight:400;">(opsiyonel — sonradan Hareketler listesinden ✎ ile düzenlenebilir)</span></label>
+        <input type="text" id="mh_referansno" placeholder="Örn: 4850 (fiş no) veya AAD2026000001547 (fatura no)">
+      </div>
+    </div>
   </div>
 
   <div class="form-row full">
@@ -349,6 +360,13 @@
       <input type="text" id="if_sorumlu" value="HALİL KAPDAN">
     </div>
   </div>
+  <div class="form-row">
+    <div>
+      <label>Fiş / Fatura No <span style="font-weight:400;">(opsiyonel — fatura henüz kesilmediyse fiş no girin, sonra düzenleyebilirsiniz)</span></label>
+      <input type="text" id="if_referansno" placeholder="Örn: 4850 (fiş no) veya AAD2026000001547 (fatura no)">
+    </div>
+    <div></div>
+  </div>
 
   <div style="margin-top:10px; margin-bottom:6px;">
     <button type="button" class="submit-btn secondary" style="width:auto; padding:8px 14px; font-size:13px;" onclick="bakiyedenDoldur()">↺ Firma bakiyesinden doldur</button>
@@ -381,6 +399,19 @@
 </div>
 
 <div class="panel">
+  <h2>📁 İade Arşivi</h2>
+  <div class="hint">Oluşturduğunuz her iade Excel'i burada otomatik saklanır — istediğiniz zaman geri dönüp tekrar indirebilirsiniz. Bu arşiv de paylaşımlıdır, herkes görür.</div>
+  <div class="search-bar">
+    <input type="text" id="arsivSearchBox" placeholder="🔍 Firma ara..." oninput="renderIadeArsivi()">
+  </div>
+  <table>
+    <thead><tr><th>Oluşturulma</th><th>Firma</th><th style="text-align:right;">Kalem</th><th style="text-align:right;">Toplam</th><th></th></tr></thead>
+    <tbody id="arsivBody"></tbody>
+  </table>
+  <div class="empty" id="arsivEmpty" style="display:none;">Henüz arşivlenmiş iade belgesi yok</div>
+</div>
+
+<div class="panel">
   <h2>Hareketler</h2>
   <div class="search-bar">
     <input type="text" id="searchBox" placeholder="🔍 Ürün veya firma ara..." oninput="render()">
@@ -390,7 +421,7 @@
     <button type="button" class="del-btn" style="color:var(--red); font-weight:700; font-size:13px;" onclick="topluSil()">🗑 Seçilenleri Sil</button>
   </div>
   <table>
-    <thead><tr><th style="width:26px;"><input type="checkbox" id="tumunuSecCheckbox" onchange="tumunuSecToggle(this.checked)"></th><th>Tarih</th><th>Ürün</th><th>Firma</th><th>İşlem</th><th>Miktar</th><th>Referans</th><th></th></tr></thead>
+    <thead><tr><th style="width:26px;"><input type="checkbox" id="tumunuSecCheckbox" onchange="tumunuSecToggle(this.checked)"></th><th>Tarih</th><th>Ürün</th><th>Firma</th><th>İşlem</th><th>Miktar</th><th>Referans</th><th>Fiş/Fatura No</th><th></th></tr></thead>
     <tbody id="tableBody"></tbody>
   </table>
   <div class="empty" id="tableEmpty" style="display:none;">Kayıt bulunamadı</div>
@@ -430,6 +461,7 @@ if (firebaseYapilandirilmisMi()) {
 const FIREBASE_REF_KAYITLAR = 'depozitTakip/kayitlar';
 const FIREBASE_REF_FIYATLAR = 'depozitTakip/urunFiyatlari';
 const FIREBASE_REF_FIYAT_GECMISI = 'depozitTakip/fiyatGecmisi';
+const FIREBASE_REF_IADE_ARSIVI = 'depozitTakip/iadeArsivi';
 
 // ---- SABİT ÜRÜN LİSTESİ ----
 const URUNLER = [
@@ -444,6 +476,7 @@ const URUNLER = [
 
 let kayitlar = [];
 let fiyatGecmisi = [];
+let iadeArsivi = [];
 let currentIslem = 'GELEN';
 let sonFifoOnizleme = { previewRows: [], uyari: [] };
 let topluOnizleme = []; // [{row, status:'ok'|'err', kayit, hata}]
@@ -739,6 +772,12 @@ function loadData() {
     fiyatGecmisi = val ? Object.values(val) : [];
     renderFiyatYonetimi();
   });
+
+  db.ref(FIREBASE_REF_IADE_ARSIVI).on('value', snap => {
+    const val = snap.val();
+    iadeArsivi = val ? Object.values(val) : [];
+    renderIadeArsivi();
+  });
 }
 
 async function saveData() {
@@ -778,6 +817,8 @@ async function kaydet() {
     kayit.faturaTarihi = document.getElementById('gh_faturatarihi').value || tarih;
     const girilenFiyat = parseFloat(document.getElementById('gh_fiyat').value);
     kayit.fiyat = (girilenFiyat && girilenFiyat > 0) ? girilenFiyat : urunFiyatiAl(urunKod);
+  } else {
+    kayit.iadeReferansNo = document.getElementById('mh_referansno').value.trim();
   }
 
   kayitlar.unshift(kayit);
@@ -793,6 +834,7 @@ async function kaydet() {
   document.getElementById('gh_faturano').value = '';
   document.getElementById('gh_faturatarihi').value = todayStr();
   document.getElementById('gh_fiyat').value = '';
+  document.getElementById('mh_referansno').value = '';
 
   render();
 }
@@ -871,6 +913,7 @@ function render() {
         <td><span class="badge ${k.islem === 'GELEN' ? 'gelen' : 'iade'}">${k.islem}</span></td>
         <td>${k.miktar}</td>
         <td>${referansEtiketi(k, breakdownMap)}</td>
+        <td>${iadeReferansHucresi(k)}</td>
         <td><button class="del-btn" onclick="sil(${k.id})">✕</button></td>
       </tr>
     `).join('');
@@ -911,6 +954,24 @@ async function topluSil() {
   await saveData();
   render();
   showToast('🗑 Seçilen kayıtlar silindi');
+}
+
+function iadeReferansHucresi(k) {
+  if (k.islem !== 'İADE') return '<span class="ref-chip">—</span>';
+  const deger = k.iadeReferansNo || '';
+  return `<span class="ref-chip">${deger ? escapeHtml(deger) : '<span style="color:#bbb;">girilmedi</span>'}</span>
+    <button class="del-btn" style="padding:2px 4px; font-size:12px;" onclick="iadeReferansDuzenle(${k.id})" title="Fiş/Fatura no düzenle">✎</button>`;
+}
+
+async function iadeReferansDuzenle(id) {
+  const k = kayitlar.find(x => x.id === id);
+  if (!k) return;
+  const yeni = prompt('Fiş / Fatura No girin (fatura kesildiyse gerçek fatura no ile güncelleyin):', k.iadeReferansNo || '');
+  if (yeni === null) return; // iptal
+  k.iadeReferansNo = yeni.trim();
+  await saveData();
+  render();
+  showToast('✎ Fiş/Fatura no güncellendi');
 }
 
 function referansEtiketi(k, breakdownMap) {
@@ -1093,6 +1154,71 @@ function formatDate(iso) {
   return `${d}.${m}.${y}`;
 }
 
+// ---- İADE ARŞİVİ ----
+async function arsiveKaydet(previewRows, firma, lokasyon, sorumlu, belgeTarihi) {
+  if (!db) return;
+  const genelToplam = previewRows.reduce((s, r) => s + r.toplam, 0);
+  const kayit = {
+    id: Date.now(),
+    olusturmaTarihi: todayStr(),
+    olusturmaZamani: new Date().toISOString(),
+    belgeTarihi, firma, lokasyon, sorumlu,
+    kalemSayisi: previewRows.length,
+    genelToplam,
+    previewRows
+  };
+  try {
+    await db.ref(FIREBASE_REF_IADE_ARSIVI + '/' + kayit.id).set(kayit);
+  } catch (e) {
+    showToast('⚠️ Belge arşive kaydedilemedi: ' + e.message);
+  }
+}
+
+function renderIadeArsivi() {
+  const search = (document.getElementById('arsivSearchBox')?.value || '').toLowerCase();
+  const filtered = iadeArsivi
+    .filter(a => a.firma.toLowerCase().includes(search))
+    .sort((a, b) => b.id - a.id);
+
+  const body = document.getElementById('arsivBody');
+  if (filtered.length === 0) {
+    body.innerHTML = '';
+    document.getElementById('arsivEmpty').style.display = 'block';
+  } else {
+    document.getElementById('arsivEmpty').style.display = 'none';
+    body.innerHTML = filtered.map(a => `
+      <tr>
+        <td>${formatDate(a.olusturmaTarihi)}</td>
+        <td>${escapeHtml(a.firma)}</td>
+        <td style="text-align:right;">${a.kalemSayisi}</td>
+        <td style="text-align:right; font-weight:700;">${formatTL(a.genelToplam)}</td>
+        <td style="white-space:nowrap;">
+          <button class="del-btn" style="color:var(--green); font-weight:700;" onclick="arsivdenIndir(${a.id})" title="Tekrar indir">⬇️</button>
+          <button class="del-btn" onclick="arsivdenSil(${a.id})" title="Arşivden sil">✕</button>
+        </td>
+      </tr>
+    `).join('');
+  }
+}
+
+function arsivdenIndir(id) {
+  const a = iadeArsivi.find(x => x.id === id);
+  if (!a) { showToast('⚠️ Belge bulunamadı'); return; }
+  excelDosyasiIndir(a.previewRows, a.firma, a.lokasyon, a.sorumlu, a.belgeTarihi);
+  showToast('⬇️ Belge tekrar indirildi');
+}
+
+async function arsivdenSil(id) {
+  if (!confirm('Bu belgeyi arşivden silmek istediğinize emin misiniz?')) return;
+  if (!db) return;
+  try {
+    await db.ref(FIREBASE_REF_IADE_ARSIVI + '/' + id).remove();
+    showToast('🗑 Arşivden silindi');
+  } catch (e) {
+    showToast('⚠️ Silinemedi: ' + e.message);
+  }
+}
+
 function escapeHtml(s) {
   const div = document.createElement('div');
   div.textContent = s == null ? '' : s;
@@ -1107,6 +1233,7 @@ function iadeFormuExcelOlustur() {
   const lokasyon = document.getElementById('if_lokasyon').value.trim() || 'ALİBEY KIZILAĞAÇ';
   const sorumlu = document.getElementById('if_sorumlu').value.trim() || 'HALİL KAPDAN';
   const belgeTarihi = document.getElementById('if_tarih').value || todayStr();
+  const referansNo = document.getElementById('if_referansno').value.trim();
 
   if (!firma) { showToast('⚠️ Firma ismi gerekli'); return; }
 
@@ -1119,6 +1246,9 @@ function iadeFormuExcelOlustur() {
 
   // Tek dosya indir — başlıkta her kabul/fatura sadece bir kez, altında tüm kalemler birleşik
   excelDosyasiIndir(previewRows, firma, lokasyon, sorumlu, belgeTarihi);
+
+  // Bu belgeyi arşive kaydet — daha sonra tekrar indirilebilsin
+  arsiveKaydet(previewRows, firma, lokasyon, sorumlu, belgeTarihi);
 
   // Ürün bazında toplam iade miktarını hareket geçmişine işle (FIFO havuzu bir sonraki hesaplamada bunu otomatik düşecek)
   const toplamByUrun = {};
@@ -1135,12 +1265,14 @@ function iadeFormuExcelOlustur() {
       firma,
       islem: 'İADE',
       miktar: toplamByUrun[kod],
+      iadeReferansNo: referansNo,
       not: 'FIFO iade formu ile oluşturuldu'
     });
   });
 
   saveData();
   render();
+  document.getElementById('if_referansno').value = '';
 
   if (uyari.length) {
     showToast(`⚠️ ${uyari[0]}`);
@@ -1400,18 +1532,38 @@ function topluOnizleVeIsle(rows) {
       kayit.faturaTarihi = faturaTarihi;
       const fiyatSayi = parseFloat(String(fiyatHam).replace(',', '.'));
       kayit.fiyat = (fiyatSayi && fiyatSayi > 0) ? fiyatSayi : (urun ? urun.fiyat : 0);
+    } else if (islem === 'İADE') {
+      // İADE satırlarında "Fatura No" kolonu iadenin kendi fiş/fatura no'su olarak kullanılır
+      kayit.iadeReferansNo = String(faturaNoHam || kabulHam || '').trim();
+    }
+
+    let status = hatalar.length ? 'err' : 'ok';
+    let hataMesaji = hatalar.join('; ');
+    if (status === 'ok' && kayitBenzerVarMi(kayit)) {
+      status = 'dup';
+      hataMesaji = 'Sistemde aynı tarih + ürün + firma + işlem + miktar ile eşleşen bir kayıt zaten var — muhtemelen mükerrer, aktarılmayacak';
     }
 
     topluOnizleme.push({
       sira: idx + 1,
-      status: hatalar.length ? 'err' : 'ok',
-      hata: hatalar.join('; '),
+      status,
+      hata: hataMesaji,
       kayit,
       goster: { tarih: tarihHam, urun: urunHam, firma: firmaHam, islem: islemHam, miktar: miktarHam, fiyat: (islem === 'GELEN' ? formatTL(kayit.fiyat || 0) : ''), kabul: kabulHam, faturaNo: faturaNoHam, faturaTarihi: faturaTarihiHam }
     });
   });
 
   renderImportOnizleme();
+}
+
+function kayitBenzerVarMi(kayit) {
+  return kayitlar.some(k =>
+    k.tarih === kayit.tarih &&
+    k.urunKod === kayit.urunKod &&
+    k.firma.toLowerCase().trim() === kayit.firma.toLowerCase().trim() &&
+    k.islem === kayit.islem &&
+    Number(k.miktar) === Number(kayit.miktar)
+  );
 }
 
 function renderImportOnizleme() {
@@ -1424,15 +1576,17 @@ function renderImportOnizleme() {
   area.style.display = 'block';
 
   const okSayi = topluOnizleme.filter(r => r.status === 'ok').length;
-  const errSayi = topluOnizleme.length - okSayi;
+  const dupSayi = topluOnizleme.filter(r => r.status === 'dup').length;
+  const errSayi = topluOnizleme.filter(r => r.status === 'err').length;
   document.getElementById('importToplamN').textContent = topluOnizleme.length;
   document.getElementById('importOkN').textContent = okSayi;
+  document.getElementById('importDupN').textContent = dupSayi;
   document.getElementById('importErrN').textContent = errSayi;
 
   document.getElementById('importTableBody').innerHTML = topluOnizleme.map(r => `
     <tr class="row-${r.status}">
       <td>${r.sira}</td>
-      <td><span class="row-status ${r.status}">${r.status === 'ok' ? '✔ OK' : '✕ HATA'}</span></td>
+      <td><span class="row-status ${r.status}">${r.status === 'ok' ? '✔ OK' : (r.status === 'dup' ? '⚠ YİNELENEN' : '✕ HATA')}</span></td>
       <td>${escapeHtml(String(r.goster.tarih))}</td>
       <td>${escapeHtml(String(r.goster.urun))}</td>
       <td>${escapeHtml(String(r.goster.firma))}</td>
@@ -1442,14 +1596,14 @@ function renderImportOnizleme() {
       <td>${escapeHtml(String(r.goster.kabul))}</td>
       <td>${escapeHtml(String(r.goster.faturaNo))}</td>
       <td>${escapeHtml(String(r.goster.faturaTarihi))}</td>
-      <td>${r.status === 'err' ? `<span class="err-msg">${escapeHtml(r.hata)}</span>` : escapeHtml(r.kayit.not)}</td>
+      <td>${r.status !== 'ok' ? `<span class="err-msg" style="color:${r.status === 'dup' ? 'var(--amber)' : 'var(--red)'};">${escapeHtml(r.hata)}</span>` : escapeHtml(r.kayit.not)}</td>
     </tr>
   `).join('');
 }
 
-async function topluIceAktar() {
-  const gecerli = topluOnizleme.filter(r => r.status === 'ok');
-  if (gecerli.length === 0) { showToast('⚠️ Aktarılacak geçerli satır yok'); return; }
+async function topluIceAktar(yinelenenlerDahil) {
+  const gecerli = topluOnizleme.filter(r => r.status === 'ok' || (yinelenenlerDahil && r.status === 'dup'));
+  if (gecerli.length === 0) { showToast('⚠️ Aktarılacak satır yok'); return; }
 
   gecerli.forEach((r, i) => {
     kayitlar.unshift({ ...r.kayit, id: Date.now() + i });
@@ -1458,10 +1612,30 @@ async function topluIceAktar() {
   await saveData();
   render();
 
-  const errSayi = topluOnizleme.length - gecerli.length;
-  showToast(`✅ ${gecerli.length} kayıt aktarıldı` + (errSayi ? `, ${errSayi} satır hatalı olduğu için atlandı` : ''));
+  const dupDahilEdilen = yinelenenlerDahil ? topluOnizleme.filter(r => r.status === 'dup').length : 0;
+  const atlanan = topluOnizleme.length - gecerli.length;
+  let mesaj = `✅ ${gecerli.length} kayıt aktarıldı`;
+  if (dupDahilEdilen) mesaj += ` (${dupDahilEdilen} yinelenen dahil)`;
+  if (atlanan) mesaj += `, ${atlanan} satır atlandı`;
+  showToast(mesaj);
 
   importIptal();
+}
+
+function mevcutVeriyiYedekle() {
+  if (kayitlar.length === 0) { showToast('⚠️ Yedeklenecek kayıt yok'); return; }
+  const headers = ['Tarih', 'Ürün Kodu', 'Firma', 'İşlem', 'Miktar', 'Fiyat', 'Kabul No', 'Fatura No', 'Fatura Tarihi', 'Not'];
+  const rows = kayitlar.map(k => [
+    k.tarih, k.urunKod, k.firma, k.islem, k.miktar,
+    (typeof k.fiyat === 'number' ? k.fiyat : ''),
+    k.kabulNo || '', k.faturaNo || '', k.faturaTarihi || '', k.not || ''
+  ]);
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+  ws['!cols'] = [{ wch: 12 }, { wch: 14 }, { wch: 20 }, { wch: 8 }, { wch: 9 }, { wch: 10 }, { wch: 14 }, { wch: 20 }, { wch: 14 }, { wch: 24 }];
+  XLSX.utils.book_append_sheet(wb, ws, 'Yedek');
+  XLSX.writeFile(wb, `depozit_yedek_${todayStr()}.xlsx`);
+  showToast(`💾 ${kayitlar.length} kayıt yedeklendi`);
 }
 
 function importIptal() {
