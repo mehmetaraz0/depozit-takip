@@ -191,21 +191,10 @@
 
 <div class="panel">
   <h2>Yeni Hareket</h2>
-  <div class="hint">Firmadan gelen ya da firmaya iade edilen depozitoyu hızlıca kaydedin. Gelen kayıtlarda fatura/kabul bilgisi girilir; iade FIFO mantığıyla en eski gelen kayıttan otomatik düşülür.</div>
+  <div class="hint">Firmadan gelen ya da firmaya iade edilen depozitoyu kaydedin. Aynı firma/tarih/fatura ile birden fazla ürünü tek seferde girmek için "➕ Satır Ekle" ile yeni satır açın. İade FIFO mantığıyla en eski gelen kayıttan otomatik düşülür ve belge otomatik indirilir.</div>
   <div class="segbtns" style="margin-bottom:10px;">
     <button type="button" class="segbtn gelen active" id="btnGelen" onclick="setIslem('GELEN')">🟢 GELEN</button>
     <button type="button" class="segbtn iade" id="btnIade" onclick="setIslem('İADE')">🔴 İADE</button>
-  </div>
-
-  <div class="form-row">
-    <div>
-      <label>Ürün</label>
-      <select id="urunSecim"></select>
-    </div>
-    <div>
-      <label>Miktar</label>
-      <input type="number" id="miktar" placeholder="0" min="1">
-    </div>
   </div>
 
   <div class="form-row">
@@ -235,16 +224,9 @@
         <input type="date" id="gh_faturatarihi">
       </div>
     </div>
-    <div class="form-row">
-      <div>
-        <label>Birim Fiyat <span style="font-weight:400;">(boş bırakılırsa güncel fiyat kullanılır)</span></label>
-        <input type="number" id="gh_fiyat" placeholder="Güncel fiyat kullanılacak" step="0.01" min="0">
-      </div>
-      <div></div>
-    </div>
   </div>
   <div id="iadeHintGrup" style="display:none;">
-    <div class="fifo-warn" style="background:var(--green-light); color:var(--green);">↺ Kaydettiğinizde bu iade FIFO mantığıyla en eski gelen kayıttan otomatik düşülecek VE iade Excel belgesi otomatik indirilecek — tekrar İade Formu'na girmenize gerek yok. Birden fazla ürünü aynı anda iade edecekseniz "İade Formu" panelini kullanın.</div>
+    <div class="fifo-warn" style="background:var(--green-light); color:var(--green);">↺ Kaydettiğinizde bu iade(ler) FIFO mantığıyla en eski gelen kayıttan otomatik düşülecek VE iade Excel belgesi/belgeleri otomatik indirilecek.</div>
     <div class="form-row full" style="margin-top:8px;">
       <div>
         <label>Fiş / Fatura No <span style="font-weight:400;">(opsiyonel — sonradan Hareketler listesinden ✎ ile düzenlenebilir)</span></label>
@@ -253,7 +235,16 @@
     </div>
   </div>
 
-  <div class="form-row full">
+  <div style="margin-top:12px; margin-bottom:6px; font-size:11px; color:var(--gray); text-transform:uppercase; font-weight:600; letter-spacing:.03em;">Kalemler</div>
+  <table class="iade-table">
+    <thead>
+      <tr><th>Ürün</th><th style="text-align:right; width:85px;">Miktar</th><th id="satirFiyatBaslik" style="text-align:right; width:100px;">Fiyat</th><th style="width:26px;"></th></tr>
+    </thead>
+    <tbody id="satirlarBody"></tbody>
+  </table>
+  <button type="button" class="submit-btn secondary" style="width:auto; padding:8px 14px; font-size:13px; margin-top:6px;" onclick="satirEkle()">➕ Satır Ekle</button>
+
+  <div class="form-row full" style="margin-top:10px;">
     <div>
       <label>Not (opsiyonel)</label>
       <input type="text" id="not" placeholder="Örn: irsaliye no, açıklama">
@@ -308,95 +299,37 @@
 </div>
 
 <div class="panel">
-  <h2>📊 Analiz</h2>
+  <h2 style="cursor:pointer; display:flex; align-items:center; justify-content:space-between;" onclick="analizToggle()">
+    <span>📊 Analiz</span>
+    <span id="analizOkIsareti" style="font-size:13px; color:var(--gray);">▸ Göster</span>
+  </h2>
 
-  <div style="font-size:11px; color:var(--gray); text-transform:uppercase; font-weight:600; margin-bottom:6px; letter-spacing:.03em;">Firma Bazlı Bekleyen Depozito Değeri (TL)</div>
-  <table>
-    <thead><tr><th>Firma</th><th style="text-align:right;">Bekleyen Değer</th></tr></thead>
-    <tbody id="analizFirmaBody"></tbody>
-    <tfoot><tr class="iade-total-row"><td style="text-align:right;">TOPLAM</td><td style="text-align:right;" id="analizFirmaToplam">0,00 ₺</td></tr></tfoot>
-  </table>
-  <div class="empty" id="analizFirmaEmpty" style="display:none;">Henüz bekleyen depozito yok</div>
-
-  <div style="font-size:11px; color:var(--gray); text-transform:uppercase; font-weight:600; margin:18px 0 6px; letter-spacing:.03em;">Ürün Bazlı GELEN / İADE Dağılımı</div>
-  <div style="display:flex; gap:14px; font-size:11px; margin-bottom:6px;">
-    <span><span style="display:inline-block;width:10px;height:10px;background:var(--green);border-radius:2px;margin-right:4px;"></span>GELEN</span>
-    <span><span style="display:inline-block;width:10px;height:10px;background:var(--red);border-radius:2px;margin-right:4px;"></span>İADE</span>
-  </div>
-  <div id="analizUrunGrafik"></div>
-
-  <div style="font-size:11px; color:var(--gray); text-transform:uppercase; font-weight:600; margin:18px 0 6px; letter-spacing:.03em;">Aylık GELEN / İADE Trendi</div>
-  <div id="analizTrendGrafik"></div>
-
-  <div style="font-size:11px; color:var(--gray); text-transform:uppercase; font-weight:600; margin:18px 0 6px; letter-spacing:.03em;">En Eski Bekleyen Depozitolar (henüz iade edilmemiş)</div>
-  <table>
-    <thead><tr><th>Firma</th><th>Ürün</th><th>Kabul No</th><th>Tarih</th><th style="text-align:right;">Bekleyen</th><th style="text-align:right;">Süre</th></tr></thead>
-    <tbody id="analizEskiBody"></tbody>
-  </table>
-  <div class="empty" id="analizEskiEmpty" style="display:none;">Bekleyen depozito yok</div>
-</div>
-
-<div class="panel">
-  <h2>📄 İade Formu — FIFO Excel Çıktısı</h2>
-  <div class="hint">İade edilecek miktarı girin. Sistem, o firmadan en eski tarihli gelen kayıttan başlayarak (FIFO) kabul no / fatura no / fatura tarihi bilgisini otomatik çeker. Çıktı, yüklediğiniz orijinal .xlsx şablonunuzun <b>birebir aynısıdır</b> — sadece boş hücreler (kabul no, fatura no, tarih, kalemler) doldurulur, hiçbir stil/renk/formül değişmez. Bir iade birden fazla fatura/kabuldan besleniyorsa, her biri için ayrı bir belge indirilir (şablon tek fatura başına tasarlanmış).</div>
-
-  <div class="form-row">
-    <div>
-      <label>Firma İsmi</label>
-      <input type="text" id="if_firma" placeholder="Örn: Duru Pazarlama" list="firmaListesi2" oninput="iadeFormuHesapla()">
-      <datalist id="firmaListesi2"></datalist>
-    </div>
-    <div>
-      <label>İade Belge Tarihi</label>
-      <input type="date" id="if_tarih">
-    </div>
-  </div>
-  <div class="form-row">
-    <div>
-      <label>Lokasyon (işletme)</label>
-      <input type="text" id="if_lokasyon" value="ALİBEY KIZILAĞAÇ">
-    </div>
-    <div>
-      <label>Depo ve Tedarik Yöneticisi</label>
-      <input type="text" id="if_sorumlu" value="HALİL KAPDAN">
-    </div>
-  </div>
-  <div class="form-row">
-    <div>
-      <label>Fiş / Fatura No <span style="font-weight:400;">(opsiyonel — fatura henüz kesilmediyse fiş no girin, sonra düzenleyebilirsiniz)</span></label>
-      <input type="text" id="if_referansno" placeholder="Örn: 4850 (fiş no) veya AAD2026000001547 (fatura no)">
-    </div>
-    <div></div>
-  </div>
-
-  <div style="margin-top:10px; margin-bottom:6px;">
-    <button type="button" class="submit-btn secondary" style="width:auto; padding:8px 14px; font-size:13px;" onclick="bakiyedenDoldur()">↺ Firma bakiyesinden doldur</button>
-  </div>
-
-  <table class="iade-table">
-    <thead>
-      <tr><th>Kalem</th><th style="text-align:right;">İade Miktarı</th><th style="text-align:right;">Birim Fiyat</th><th style="text-align:right;">Toplam</th></tr>
-    </thead>
-    <tbody id="iadeFormBody"></tbody>
-    <tfoot>
-      <tr class="iade-total-row">
-        <td colspan="3" style="text-align:right;">TOPLAM</td>
-        <td style="text-align:right;" id="iadeFormToplam">0,00 ₺</td>
-      </tr>
-    </tfoot>
-  </table>
-
-  <div class="fifo-box">
-    <h3>FIFO Dağılımı — hangi fatura/kabuldan ne kadar çekilecek</h3>
-    <table class="fifo-table" id="fifoTable" style="display:none;">
-      <thead><tr><th>Ürün</th><th>Kabul No</th><th>Fatura No</th><th>Fatura Tarihi</th><th style="text-align:right;">Birim Fiyat</th><th style="text-align:right;">Miktar</th><th style="text-align:right;">Toplam</th></tr></thead>
-      <tbody id="fifoTableBody"></tbody>
+  <div id="analizIcerik" style="display:none;">
+    <div style="font-size:11px; color:var(--gray); text-transform:uppercase; font-weight:600; margin-bottom:6px; letter-spacing:.03em;">Firma Bazlı Bekleyen Depozito Değeri (TL)</div>
+    <table>
+      <thead><tr><th>Firma</th><th style="text-align:right;">Bekleyen Değer</th></tr></thead>
+      <tbody id="analizFirmaBody"></tbody>
+      <tfoot><tr class="iade-total-row"><td style="text-align:right;">TOPLAM</td><td style="text-align:right;" id="analizFirmaToplam">0,00 ₺</td></tr></tfoot>
     </table>
-    <div class="fifo-empty" id="fifoEmpty">Miktar girildiğinde FIFO dağılımı burada görünecek.</div>
-    <div id="fifoWarnBox"></div>
-  </div>
+    <div class="empty" id="analizFirmaEmpty" style="display:none;">Henüz bekleyen depozito yok</div>
 
-  <button class="submit-btn excel" onclick="iadeFormuExcelOlustur()">📊 FIFO Excel Çıktısı Oluştur</button>
+    <div style="font-size:11px; color:var(--gray); text-transform:uppercase; font-weight:600; margin:18px 0 6px; letter-spacing:.03em;">Ürün Bazlı GELEN / İADE Dağılımı</div>
+    <div style="display:flex; gap:14px; font-size:11px; margin-bottom:6px;">
+      <span><span style="display:inline-block;width:10px;height:10px;background:var(--green);border-radius:2px;margin-right:4px;"></span>GELEN</span>
+      <span><span style="display:inline-block;width:10px;height:10px;background:var(--red);border-radius:2px;margin-right:4px;"></span>İADE</span>
+    </div>
+    <div id="analizUrunGrafik"></div>
+
+    <div style="font-size:11px; color:var(--gray); text-transform:uppercase; font-weight:600; margin:18px 0 6px; letter-spacing:.03em;">Aylık GELEN / İADE Trendi</div>
+    <div id="analizTrendGrafik"></div>
+
+    <div style="font-size:11px; color:var(--gray); text-transform:uppercase; font-weight:600; margin:18px 0 6px; letter-spacing:.03em;">En Eski Bekleyen Depozitolar (henüz iade edilmemiş)</div>
+    <table>
+      <thead><tr><th>Firma</th><th>Ürün</th><th>Kabul No</th><th>Tarih</th><th style="text-align:right;">Bekleyen</th><th style="text-align:right;">Süre</th></tr></thead>
+      <tbody id="analizEskiBody"></tbody>
+    </table>
+    <div class="empty" id="analizEskiEmpty" style="display:none;">Bekleyen depozito yok</div>
+  </div>
 </div>
 
 <div class="panel">
@@ -479,7 +412,6 @@ let kayitlar = [];
 let fiyatGecmisi = [];
 let iadeArsivi = [];
 let currentIslem = 'GELEN';
-let sonFifoOnizleme = { previewRows: [], uyari: [] };
 let topluOnizleme = []; // [{row, status:'ok'|'err', kayit, hata}]
 let seciliKayitlar = new Set();
 
@@ -490,6 +422,7 @@ function setIslem(v) {
   document.getElementById('btnIade').classList.toggle('active', v === 'İADE');
   document.getElementById('gelenFaturaGrup').style.display = (v === 'GELEN') ? 'block' : 'none';
   document.getElementById('iadeHintGrup').style.display = (v === 'İADE') ? 'block' : 'none';
+  satirFiyatGorunumGuncelle();
 }
 
 function todayStr() {
@@ -511,23 +444,56 @@ function urunFiyatiAl(kod) {
   return u ? u.fiyat : 0;
 }
 
-function fillUrunSelect() {
-  const sel = document.getElementById('urunSecim');
-  sel.innerHTML = URUNLER.map(u => `<option value="${u.kod}">${u.kod} - ${u.ad}</option>`).join('');
-  const fySel = document.getElementById('fy_urun');
-  fySel.innerHTML = URUNLER.map(u => `<option value="${u.kod}">${u.kod} - ${u.ad} (${formatTL(u.fiyat)})</option>`).join('');
+function urunOptionsHTML(secili) {
+  return URUNLER.map(u => `<option value="${u.kod}" ${u.kod === secili ? 'selected' : ''}>${u.kod} - ${u.ad}</option>`).join('');
 }
 
-function fillIadeFormTable() {
-  const tbody = document.getElementById('iadeFormBody');
-  tbody.innerHTML = URUNLER.map(u => `
-    <tr>
-      <td>${u.kod}<br><span style="color:#616161;font-size:11px;">${u.ad}</span></td>
-      <td><input type="number" min="0" value="0" class="iade-miktar" data-kod="${u.kod}" oninput="iadeFormuHesapla()"></td>
-      <td class="fiyat-col" id="fiyat_${u.kod}">${formatTL(u.fiyat)}</td>
-      <td class="toplam-col" id="toplam_${u.kod}">${formatTL(0)}</td>
-    </tr>
-  `).join('');
+function fillUrunSelect() {
+  const fySel = document.getElementById('fy_urun');
+  fySel.innerHTML = URUNLER.map(u => `<option value="${u.kod}">${u.kod} - ${u.ad} (${formatTL(u.fiyat)})</option>`).join('');
+  document.querySelectorAll('.mh-urun').forEach(sel => {
+    const secili = sel.value;
+    sel.innerHTML = urunOptionsHTML(secili);
+  });
+}
+
+// ---- ÇOK SATIRLI KALEM GİRİŞİ (Yeni Hareket) ----
+let satirIdSayaci = 0;
+
+function satirEkle() {
+  const id = ++satirIdSayaci;
+  const tbody = document.getElementById('satirlarBody');
+  const tr = document.createElement('tr');
+  tr.className = 'mh-row';
+  tr.dataset.rid = id;
+  tr.innerHTML = `
+    <td><select class="mh-urun">${urunOptionsHTML()}</select></td>
+    <td><input type="number" class="mh-miktar" min="0" placeholder="0" style="text-align:right;"></td>
+    <td class="mh-fiyat-td"><input type="number" class="mh-fiyat" min="0" step="0.01" placeholder="güncel" style="text-align:right;"></td>
+    <td><button type="button" class="del-btn" onclick="satirSil(${id})">✕</button></td>
+  `;
+  tbody.appendChild(tr);
+  satirFiyatGorunumGuncelle();
+}
+
+function satirSil(id) {
+  const rows = document.querySelectorAll('.mh-row');
+  if (rows.length <= 1) { showToast('⚠️ En az bir satır kalmalı'); return; }
+  const el = document.querySelector(`.mh-row[data-rid="${id}"]`);
+  if (el) el.remove();
+}
+
+function satirlariSifirla() {
+  document.getElementById('satirlarBody').innerHTML = '';
+  satirIdSayaci = 0;
+  satirEkle();
+}
+
+function satirFiyatGorunumGuncelle() {
+  const goster = currentIslem === 'GELEN';
+  const baslik = document.getElementById('satirFiyatBaslik');
+  if (baslik) baslik.style.display = goster ? '' : 'none';
+  document.querySelectorAll('.mh-fiyat-td').forEach(td => td.style.display = goster ? '' : 'none');
 }
 
 // ---- FİYAT YÖNETİMİ ----
@@ -558,7 +524,6 @@ async function fiyatGuncelle() {
 
   await saveFiyatlar();
   fillUrunSelect();
-  fillIadeFormTable();
   renderFiyatYonetimi();
   document.getElementById('fy_fiyat').value = '';
   showToast(`💰 ${u.ad}: ${formatTL(eskiFiyat)} → ${formatTL(yeniFiyat)} (${formatDate(tarih)} itibarıyla)`);
@@ -630,120 +595,12 @@ function buildPool() {
   return { pool, breakdownMap };
 }
 
-// Yeni (henüz kaydedilmemiş) bir iade talebi için FIFO dağılımını hesaplar — mevcut kayıtları etkilemez.
-function fifoOnizleHesapla(firma, kod, miktarTalep, pool) {
-  const u = URUNLER.find(x => x.kod === kod);
-  const key = firma.toLowerCase() + '||' + kod;
-  const batches = pool[key] || [];
-  let need = miktarTalep;
-  let karsilanan = 0;
-  const rows = [];
-  for (const b of batches) {
-    if (need <= 0) break;
-    if (b.kalan <= 0) continue;
-    const al = Math.min(b.kalan, need);
-    const birimFiyat = b.fiyat; // bu parti hangi fiyattan geldiyse o fiyat kullanılır (eski fiyat eskisinde kalır)
-    const toplam = al * birimFiyat;
-    rows.push({ kod, ad: u.ad, kabulNo: b.kabulNo, faturaNo: b.faturaNo, faturaTarihi: b.faturaTarihi, miktar: al, fiyat: birimFiyat, toplam });
-    need -= al;
-    karsilanan += al;
-    b.kalan -= al; // aynı önizleme çağrısı içinde partiyi tüket, kayıtlara dokunma
-  }
-  return { rows, karsilanan, karsilanamayan: need };
-}
-
-function computeFifoPreview() {
-  const firma = document.getElementById('if_firma').value.trim();
-  const previewRows = [];
-  const uyari = [];
-  if (!firma) return { previewRows, uyari };
-
-  const { pool } = buildPool();
-
-  document.querySelectorAll('.iade-miktar').forEach(inp => {
-    const kod = inp.dataset.kod;
-    const talep = parseFloat(inp.value) || 0;
-    if (talep <= 0) return;
-    const sonuc = fifoOnizleHesapla(firma, kod, talep, pool);
-    previewRows.push(...sonuc.rows);
-    if (sonuc.karsilanamayan > 0) {
-      const u = URUNLER.find(x => x.kod === kod);
-      uyari.push(`${u.ad}: talep edilen ${talep} adetin ${sonuc.karsilanamayan} tanesi için bu firmada yeterli bakiye yok (${sonuc.karsilanan} adet karşılanabiliyor).`);
-    }
-  });
-
-  return { previewRows, uyari };
-}
-
-function iadeFormuHesapla() {
-  let genelToplam = 0;
-  document.querySelectorAll('.iade-miktar').forEach(inp => {
-    const kod = inp.dataset.kod;
-    const u = URUNLER.find(x => x.kod === kod);
-    const miktar = parseFloat(inp.value) || 0;
-    const toplam = miktar * u.fiyat;
-    document.getElementById('toplam_' + kod).textContent = formatTL(toplam);
-    genelToplam += toplam;
-  });
-  document.getElementById('iadeFormToplam').textContent = formatTL(genelToplam);
-
-  sonFifoOnizleme = computeFifoPreview();
-  renderFifoOnizleme(sonFifoOnizleme);
-}
-
-function renderFifoOnizleme(data) {
-  const { previewRows, uyari } = data;
-  const table = document.getElementById('fifoTable');
-  const body = document.getElementById('fifoTableBody');
-  const empty = document.getElementById('fifoEmpty');
-  const warnBox = document.getElementById('fifoWarnBox');
-
-  if (previewRows.length === 0) {
-    table.style.display = 'none';
-    empty.style.display = 'block';
-    body.innerHTML = '';
-  } else {
-    table.style.display = 'table';
-    empty.style.display = 'none';
-    body.innerHTML = previewRows.map(r => `
-      <tr>
-        <td>${escapeHtml(r.ad)}</td>
-        <td>${escapeHtml(r.kabulNo) || '<span style="color:#bbb;">—</span>'}</td>
-        <td>${escapeHtml(r.faturaNo) || '<span style="color:#bbb;">—</span>'}</td>
-        <td>${r.faturaTarihi ? formatDate(r.faturaTarihi) : '—'}</td>
-        <td style="text-align:right;">${formatTL(r.fiyat)}</td>
-        <td style="text-align:right;">${r.miktar}</td>
-        <td style="text-align:right;">${formatTL(r.toplam)}</td>
-      </tr>
-    `).join('');
-  }
-
-  warnBox.innerHTML = uyari.length
-    ? uyari.map(w => `<div class="fifo-warn">⚠️ ${escapeHtml(w)}</div>`).join('')
-    : '';
-}
-
-function bakiyedenDoldur() {
-  const firma = document.getElementById('if_firma').value.trim();
-  if (!firma) { showToast('⚠️ Önce firma adı girin'); return; }
-  const { pool } = buildPool();
-  document.querySelectorAll('.iade-miktar').forEach(inp => {
-    const kod = inp.dataset.kod;
-    const key = firma.toLowerCase() + '||' + kod;
-    const bakiye = (pool[key] || []).reduce((sum, b) => sum + Math.max(0, b.kalan), 0);
-    inp.value = bakiye;
-  });
-  iadeFormuHesapla();
-  showToast('↺ Bakiyeden dolduruldu');
-}
-
 function loadData() {
   document.getElementById('tarih').value = todayStr();
   document.getElementById('gh_faturatarihi').value = todayStr();
-  document.getElementById('if_tarih').value = todayStr();
   document.getElementById('fy_tarih').value = todayStr();
+  satirlariSifirla();
   fillUrunSelect();
-  fillIadeFormTable();
   renderFiyatYonetimi();
   render();
 
@@ -764,7 +621,6 @@ function loadData() {
     const val = snap.val();
     if (val) URUNLER.forEach(u => { if (typeof val[u.kod] === 'number') u.fiyat = val[u.kod]; });
     fillUrunSelect();
-    fillIadeFormTable();
     renderFiyatYonetimi();
   });
 
@@ -798,69 +654,93 @@ function showToast(msg) {
 }
 
 async function kaydet() {
-  const urunKod = document.getElementById('urunSecim').value;
-  const miktar = parseInt(document.getElementById('miktar').value);
   const firma = document.getElementById('firma').value.trim();
   const tarih = document.getElementById('tarih').value || todayStr();
   const not = document.getElementById('not').value.trim();
 
-  if (!miktar || miktar <= 0) { showToast('⚠️ Geçerli miktar girin'); return; }
   if (!firma) { showToast('⚠️ Firma adı gerekli'); return; }
 
-  const kayit = {
-    id: Date.now(),
-    tarih, urunKod, urunAdi: urunAdiByKod(urunKod), firma, islem: currentIslem, miktar, not
-  };
+  const satirlar = [...document.querySelectorAll('.mh-row')].map(tr => ({
+    urunKod: tr.querySelector('.mh-urun').value,
+    miktar: parseInt(tr.querySelector('.mh-miktar').value) || 0,
+    fiyat: parseFloat(tr.querySelector('.mh-fiyat').value) || 0
+  })).filter(s => s.miktar > 0);
 
-  if (currentIslem === 'GELEN') {
-    kayit.kabulNo = document.getElementById('gh_kabulno').value.trim();
-    kayit.faturaNo = document.getElementById('gh_faturano').value.trim();
-    kayit.faturaTarihi = document.getElementById('gh_faturatarihi').value || tarih;
-    const girilenFiyat = parseFloat(document.getElementById('gh_fiyat').value);
-    kayit.fiyat = (girilenFiyat && girilenFiyat > 0) ? girilenFiyat : urunFiyatiAl(urunKod);
-  } else {
-    kayit.iadeReferansNo = document.getElementById('mh_referansno').value.trim();
-  }
+  if (satirlar.length === 0) { showToast('⚠️ En az bir satırda geçerli miktar girin'); return; }
 
-  kayitlar.unshift(kayit);
+  const gelenFaturaBilgisi = currentIslem === 'GELEN' ? {
+    kabulNo: document.getElementById('gh_kabulno').value.trim(),
+    faturaNo: document.getElementById('gh_faturano').value.trim(),
+    faturaTarihi: document.getElementById('gh_faturatarihi').value || tarih
+  } : null;
+  const iadeReferansNo = currentIslem === 'İADE' ? document.getElementById('mh_referansno').value.trim() : '';
+
+  const eklenenIdler = [];
+  let ekIndex = 0;
+  satirlar.forEach(s => {
+    const id = Date.now() + (ekIndex++);
+    const kayit = {
+      id, tarih, urunKod: s.urunKod, urunAdi: urunAdiByKod(s.urunKod), firma, islem: currentIslem, miktar: s.miktar, not
+    };
+    if (currentIslem === 'GELEN') {
+      kayit.kabulNo = gelenFaturaBilgisi.kabulNo;
+      kayit.faturaNo = gelenFaturaBilgisi.faturaNo;
+      kayit.faturaTarihi = gelenFaturaBilgisi.faturaTarihi;
+      kayit.fiyat = (s.fiyat && s.fiyat > 0) ? s.fiyat : urunFiyatiAl(s.urunKod);
+    } else {
+      kayit.iadeReferansNo = iadeReferansNo;
+    }
+    kayitlar.unshift(kayit);
+    eklenenIdler.push(id);
+  });
 
   await saveData();
 
   if (currentIslem === 'GELEN') {
-    showToast('🟢 Gelen kaydedildi');
+    showToast(`🟢 ${satirlar.length} kalemlik gelen kaydı eklendi`);
   } else {
-    // İkinci kez İade Formu'na girmeye gerek kalmasın — belge otomatik üretilsin
+    // İkinci kez İade Formu'na girmeye gerek kalmasın — belge(ler) otomatik üretilsin
     const { breakdownMap } = buildPool();
-    const info = breakdownMap[kayit.id];
-    if (info && info.used.length > 0) {
-      const previewRows = info.used.map(u => ({
-        kod: urunKod, ad: urunAdiByKod(urunKod),
-        kabulNo: u.kabulNo, faturaNo: u.faturaNo, faturaTarihi: u.faturaTarihi,
-        miktar: u.miktar, fiyat: u.fiyat, toplam: u.miktar * u.fiyat
-      }));
+    const previewRows = [];
+    let karsilanamayanToplam = 0;
+    eklenenIdler.forEach(id => {
+      const info = breakdownMap[id];
+      const kayit = kayitlar.find(k => k.id === id);
+      if (info) {
+        info.used.forEach(u => {
+          previewRows.push({
+            kod: kayit.urunKod, ad: urunAdiByKod(kayit.urunKod),
+            kabulNo: u.kabulNo, faturaNo: u.faturaNo, faturaTarihi: u.faturaTarihi,
+            miktar: u.miktar, fiyat: u.fiyat, toplam: u.miktar * u.fiyat
+          });
+        });
+        karsilanamayanToplam += info.karsilanamayan;
+      }
+    });
+
+    if (previewRows.length > 0) {
       const DEFAULT_LOKASYON = 'ALİBEY KIZILAĞAÇ';
       const DEFAULT_SORUMLU = 'HALİL KAPDAN';
-      await previewRowsToDosyalar(previewRows, firma, DEFAULT_LOKASYON, DEFAULT_SORUMLU, tarih);
+      const belgeSayisi = await previewRowsToDosyalar(previewRows, firma, DEFAULT_LOKASYON, DEFAULT_SORUMLU, tarih);
       arsiveKaydet(previewRows, firma, DEFAULT_LOKASYON, DEFAULT_SORUMLU, tarih);
-      if (info.karsilanamayan > 0) {
-        showToast(`⚠️ ${info.karsilanamayan} adet için bakiye yetersizdi, belge kısmi oluşturuldu`);
+      if (karsilanamayanToplam > 0) {
+        showToast(`⚠️ ${karsilanamayanToplam} adet için bakiye yetersizdi, ${belgeSayisi} belge kısmi oluşturuldu`);
       } else {
-        showToast('🔴 İade kaydedildi ve belge otomatik indirildi');
+        showToast(`🔴 ${satirlar.length} kalemlik iade kaydedildi, ${belgeSayisi} belge otomatik indirildi`);
       }
     } else {
-      showToast('⚠️ İade kaydedildi ama bu firma/üründe bakiye bulunamadığından belge oluşturulamadı');
+      showToast('⚠️ İade kaydedildi ama bakiye bulunamadığından belge oluşturulamadı');
     }
   }
 
-  document.getElementById('miktar').value = '';
   document.getElementById('firma').value = '';
   document.getElementById('not').value = '';
   document.getElementById('tarih').value = todayStr();
   document.getElementById('gh_kabulno').value = '';
   document.getElementById('gh_faturano').value = '';
   document.getElementById('gh_faturatarihi').value = todayStr();
-  document.getElementById('gh_fiyat').value = '';
   document.getElementById('mh_referansno').value = '';
+  satirlariSifirla();
 
   render();
 }
@@ -875,7 +755,6 @@ async function sil(id) {
 function render() {
   const firmalar = [...new Set(kayitlar.map(k => k.firma))];
   document.getElementById('firmaListesi').innerHTML = firmalar.map(f => `<option value="${escapeHtml(f)}">`).join('');
-  document.getElementById('firmaListesi2').innerHTML = firmalar.map(f => `<option value="${escapeHtml(f)}">`).join('');
 
   let totalGelen = 0, totalIade = 0;
   kayitlar.forEach(k => {
@@ -1119,6 +998,14 @@ function gunSayisi(tarihStr) {
   return Math.max(0, Math.floor((nowUTC - t) / 86400000));
 }
 
+let analizAcikMi = false;
+
+function analizToggle() {
+  analizAcikMi = !analizAcikMi;
+  document.getElementById('analizIcerik').style.display = analizAcikMi ? 'block' : 'none';
+  document.getElementById('analizOkIsareti').textContent = analizAcikMi ? '▾ Gizle' : '▸ Göster';
+}
+
 function renderAnaliz(pool) {
   // Firma bazlı bekleyen değer
   const firmaDeger = firmaBekleyenDeger(pool);
@@ -1249,61 +1136,6 @@ function escapeHtml(s) {
   const div = document.createElement('div');
   div.textContent = s == null ? '' : s;
   return div.innerHTML;
-}
-
-// ---- İADE FORMU — ORİJİNAL ŞABLONDAN OTOMATİK DOLAN EXCEL ÇIKTISI ----
-// Bir iade talebi birden fazla eski fatura/kabuldan besleniyorsa, her biri için
-// orijinal şirket şablonunuzla (hücre hücre birebir) ayrı bir .xlsx dosyası indirilir.
-async function iadeFormuExcelOlustur() {
-  const firma = document.getElementById('if_firma').value.trim();
-  const lokasyon = document.getElementById('if_lokasyon').value.trim() || 'ALİBEY KIZILAĞAÇ';
-  const sorumlu = document.getElementById('if_sorumlu').value.trim() || 'HALİL KAPDAN';
-  const belgeTarihi = document.getElementById('if_tarih').value || todayStr();
-  const referansNo = document.getElementById('if_referansno').value.trim();
-
-  if (!firma) { showToast('⚠️ Firma ismi gerekli'); return; }
-
-  const { previewRows, uyari } = computeFifoPreview();
-
-  if (previewRows.length === 0) {
-    showToast('⚠️ En az bir üründe miktar girin (bakiye yoksa FIFO dağılımı boş kalır)');
-    return;
-  }
-
-  const belgeSayisi = await previewRowsToDosyalar(previewRows, firma, lokasyon, sorumlu, belgeTarihi);
-
-  // Bu belgeyi arşive kaydet — daha sonra tekrar indirilebilsin
-  arsiveKaydet(previewRows, firma, lokasyon, sorumlu, belgeTarihi);
-
-  // Ürün bazında toplam iade miktarını hareket geçmişine işle (FIFO havuzu bir sonraki hesaplamada bunu otomatik düşecek)
-  const toplamByUrun = {};
-  previewRows.forEach(r => {
-    toplamByUrun[r.kod] = (toplamByUrun[r.kod] || 0) + r.miktar;
-  });
-  let ekIndex = 0;
-  Object.keys(toplamByUrun).forEach(kod => {
-    kayitlar.unshift({
-      id: Date.now() + (ekIndex++),
-      tarih: belgeTarihi,
-      urunKod: kod,
-      urunAdi: urunAdiByKod(kod),
-      firma,
-      islem: 'İADE',
-      miktar: toplamByUrun[kod],
-      iadeReferansNo: referansNo,
-      not: 'FIFO iade formu ile oluşturuldu'
-    });
-  });
-
-  saveData();
-  render();
-  document.getElementById('if_referansno').value = '';
-
-  if (uyari.length) {
-    showToast(`⚠️ ${uyari[0]}`);
-  } else {
-    showToast(`📊 ${belgeSayisi} adet iade belgesi indirildi (orijinal şablon)`);
-  }
 }
 
 // ---- GERÇEK EXCEL ŞABLONUNDAN BELGE ÜRETME ----
