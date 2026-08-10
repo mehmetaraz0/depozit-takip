@@ -244,7 +244,7 @@
     </div>
   </div>
   <div id="iadeHintGrup" style="display:none;">
-    <div class="fifo-warn" style="background:var(--green-light); color:var(--green);">↺ Bu iade, seçilen firma/ürün için en eski gelen kayıttan (kabul/fatura bilgisiyle) FIFO mantığıyla otomatik düşülecek.</div>
+    <div class="fifo-warn" style="background:var(--green-light); color:var(--green);">↺ Kaydettiğinizde bu iade FIFO mantığıyla en eski gelen kayıttan otomatik düşülecek VE iade Excel belgesi otomatik indirilecek — tekrar İade Formu'na girmenize gerek yok. Birden fazla ürünü aynı anda iade edecekseniz "İade Formu" panelini kullanın.</div>
     <div class="form-row full" style="margin-top:8px;">
       <div>
         <label>Fiş / Fatura No <span style="font-weight:400;">(opsiyonel — sonradan Hareketler listesinden ✎ ile düzenlenebilir)</span></label>
@@ -621,7 +621,7 @@ function buildPool() {
         const al = Math.min(b.kalan, need);
         b.kalan -= al;
         need -= al;
-        used.push({ kabulNo: b.kabulNo, faturaNo: b.faturaNo, faturaTarihi: b.faturaTarihi, miktar: al });
+        used.push({ kabulNo: b.kabulNo, faturaNo: b.faturaNo, faturaTarihi: b.faturaTarihi, fiyat: b.fiyat, miktar: al });
       }
       breakdownMap[k.id] = { used, karsilanamayan: need };
     }
@@ -825,7 +825,32 @@ async function kaydet() {
   kayitlar.unshift(kayit);
 
   await saveData();
-  showToast(currentIslem === 'GELEN' ? '🟢 Gelen kaydedildi' : '🔴 İade kaydedildi (FIFO ile düşülecek)');
+
+  if (currentIslem === 'GELEN') {
+    showToast('🟢 Gelen kaydedildi');
+  } else {
+    // İkinci kez İade Formu'na girmeye gerek kalmasın — belge otomatik üretilsin
+    const { breakdownMap } = buildPool();
+    const info = breakdownMap[kayit.id];
+    if (info && info.used.length > 0) {
+      const previewRows = info.used.map(u => ({
+        kod: urunKod, ad: urunAdiByKod(urunKod),
+        kabulNo: u.kabulNo, faturaNo: u.faturaNo, faturaTarihi: u.faturaTarihi,
+        miktar: u.miktar, fiyat: u.fiyat, toplam: u.miktar * u.fiyat
+      }));
+      const DEFAULT_LOKASYON = 'ALİBEY KIZILAĞAÇ';
+      const DEFAULT_SORUMLU = 'HALİL KAPDAN';
+      await previewRowsToDosyalar(previewRows, firma, DEFAULT_LOKASYON, DEFAULT_SORUMLU, tarih);
+      arsiveKaydet(previewRows, firma, DEFAULT_LOKASYON, DEFAULT_SORUMLU, tarih);
+      if (info.karsilanamayan > 0) {
+        showToast(`⚠️ ${info.karsilanamayan} adet için bakiye yetersizdi, belge kısmi oluşturuldu`);
+      } else {
+        showToast('🔴 İade kaydedildi ve belge otomatik indirildi');
+      }
+    } else {
+      showToast('⚠️ İade kaydedildi ama bu firma/üründe bakiye bulunamadığından belge oluşturulamadı');
+    }
+  }
 
   document.getElementById('miktar').value = '';
   document.getElementById('firma').value = '';
