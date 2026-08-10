@@ -226,10 +226,24 @@
     </div>
   </div>
   <div id="iadeHintGrup" style="display:none;">
-    <div class="fifo-warn" style="background:var(--green-light); color:var(--green);">↺ Kaydettiğinizde bu iade(ler) FIFO mantığıyla en eski gelen kayıttan otomatik düşülecek VE iade Excel belgesi/belgeleri otomatik indirilecek.</div>
-    <div class="form-row full" style="margin-top:8px;">
+    <div class="fifo-warn" style="background:var(--green-light); color:var(--green);">↺ Kaydettiğinizde tüm kalemler FIFO mantığıyla en eski gelen kayıttan otomatik düşülecek VE hepsi <b>TEK bir Excel belgesinde</b> birleşik olarak otomatik indirilecek.</div>
+    <div class="form-row three" style="margin-top:8px;">
       <div>
-        <label>Fiş / Fatura No <span style="font-weight:400;">(opsiyonel — sonradan Hareketler listesinden ✎ ile düzenlenebilir)</span></label>
+        <label>Kabul No <span style="font-weight:400;">(belgede tek yazılır — boşsa en eski partiden alınır)</span></label>
+        <input type="text" id="mh_kabulno" placeholder="Örn: 110300982">
+      </div>
+      <div>
+        <label>Fatura No <span style="font-weight:400;">(belgede tek yazılır)</span></label>
+        <input type="text" id="mh_faturano" placeholder="Örn: E802026000015452">
+      </div>
+      <div>
+        <label>Fatura Tarihi</label>
+        <input type="date" id="mh_faturatarihi">
+      </div>
+    </div>
+    <div class="form-row full">
+      <div>
+        <label>İade Fiş / Fatura No <span style="font-weight:400;">(sizin kestiğiniz iade fişi — sonradan Hareketler listesinden ✎ ile düzenlenebilir)</span></label>
         <input type="text" id="mh_referansno" placeholder="Örn: 4850 (fiş no) veya AAD2026000001547 (fatura no)">
       </div>
     </div>
@@ -674,6 +688,11 @@ async function kaydet() {
     faturaTarihi: document.getElementById('gh_faturatarihi').value || tarih
   } : null;
   const iadeReferansNo = currentIslem === 'İADE' ? document.getElementById('mh_referansno').value.trim() : '';
+  const manuelBaslik = currentIslem === 'İADE' ? {
+    kabulNo: document.getElementById('mh_kabulno').value.trim(),
+    faturaNo: document.getElementById('mh_faturano').value.trim(),
+    faturaTarihi: document.getElementById('mh_faturatarihi').value || ''
+  } : null;
 
   const eklenenIdler = [];
   let ekIndex = 0;
@@ -721,8 +740,8 @@ async function kaydet() {
     if (previewRows.length > 0) {
       const DEFAULT_LOKASYON = 'ALİBEY KIZILAĞAÇ';
       const DEFAULT_SORUMLU = 'HALİL KAPDAN';
-      const belgeSayisi = await previewRowsToDosyalar(previewRows, firma, DEFAULT_LOKASYON, DEFAULT_SORUMLU, tarih);
-      arsiveKaydet(previewRows, firma, DEFAULT_LOKASYON, DEFAULT_SORUMLU, tarih);
+      const belgeSayisi = await previewRowsToDosyalar(previewRows, firma, DEFAULT_LOKASYON, DEFAULT_SORUMLU, tarih, manuelBaslik);
+      arsiveKaydet(previewRows, firma, DEFAULT_LOKASYON, DEFAULT_SORUMLU, tarih, manuelBaslik);
       if (karsilanamayanToplam > 0) {
         showToast(`⚠️ ${karsilanamayanToplam} adet için bakiye yetersizdi, ${belgeSayisi} belge kısmi oluşturuldu`);
       } else {
@@ -740,6 +759,9 @@ async function kaydet() {
   document.getElementById('gh_faturano').value = '';
   document.getElementById('gh_faturatarihi').value = todayStr();
   document.getElementById('mh_referansno').value = '';
+  document.getElementById('mh_kabulno').value = '';
+  document.getElementById('mh_faturano').value = '';
+  document.getElementById('mh_faturatarihi').value = '';
   satirlariSifirla();
 
   render();
@@ -1068,7 +1090,7 @@ function formatDate(iso) {
 }
 
 // ---- İADE ARŞİVİ ----
-async function arsiveKaydet(previewRows, firma, lokasyon, sorumlu, belgeTarihi) {
+async function arsiveKaydet(previewRows, firma, lokasyon, sorumlu, belgeTarihi, manuelBaslik) {
   if (!db) return;
   const genelToplam = previewRows.reduce((s, r) => s + r.toplam, 0);
   const kayit = {
@@ -1076,6 +1098,7 @@ async function arsiveKaydet(previewRows, firma, lokasyon, sorumlu, belgeTarihi) 
     olusturmaTarihi: todayStr(),
     olusturmaZamani: new Date().toISOString(),
     belgeTarihi, firma, lokasyon, sorumlu,
+    manuelBaslik: manuelBaslik || null,
     kalemSayisi: previewRows.length,
     genelToplam,
     previewRows
@@ -1117,7 +1140,7 @@ function renderIadeArsivi() {
 async function arsivdenIndir(id) {
   const a = iadeArsivi.find(x => x.id === id);
   if (!a) { showToast('⚠️ Belge bulunamadı'); return; }
-  await previewRowsToDosyalar(a.previewRows, a.firma, a.lokasyon, a.sorumlu, a.belgeTarihi);
+  await previewRowsToDosyalar(a.previewRows, a.firma, a.lokasyon, a.sorumlu, a.belgeTarihi, a.manuelBaslik);
   showToast('⬇️ Belge tekrar indirildi');
 }
 
@@ -1229,39 +1252,38 @@ async function sablonExceliUret(grup, firma, lokasyon, sorumlu, belgeTarihi) {
 
 // previewRows'u kabul no + fatura no + fatura tarihi kombinasyonuna göre gruplar,
 // her grup için orijinal şablondan bir .xlsx üretip indirir.
-async function previewRowsToDosyalar(previewRows, firma, lokasyon, sorumlu, belgeTarihi) {
-  const groups = {};
-  const groupOrder = [];
-  previewRows.forEach(r => {
-    const key = (r.kabulNo || '—') + '||' + (r.faturaNo || '—') + '||' + (r.faturaTarihi || '');
-    if (!groups[key]) {
-      groups[key] = { kabulNo: r.kabulNo, faturaNo: r.faturaNo, faturaTarihi: r.faturaTarihi, rows: [] };
-      groupOrder.push(key);
-    }
-    groups[key].rows.push(r);
-  });
+async function previewRowsToDosyalar(previewRows, firma, lokasyon, sorumlu, belgeTarihi, manuelBaslik) {
+  if (previewRows.length === 0) return 0;
 
-  for (let i = 0; i < groupOrder.length; i++) {
-    const grup = groups[groupOrder[i]];
-    try {
-      const blob = await sablonExceliUret(grup, firma, lokasyon, sorumlu, belgeTarihi);
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      const safeFirma = firma.replace(/[^a-zA-Z0-9ğüşıöçĞÜŞİÖÇ]+/g, '_');
-      const safeKabul = (grup.kabulNo || 'kabulsuz').replace(/[^a-zA-Z0-9ğüşıöçĞÜŞİÖÇ]+/g, '_');
-      a.href = url;
-      a.download = `IADE_FORMU_${safeFirma}_${safeKabul}_${belgeTarihi}.xlsx`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-    } catch (e) {
-      showToast('⚠️ Belge oluşturulamadı: ' + e.message);
-    }
-    await new Promise(res => setTimeout(res, 450));
+  if (previewRows.length > 15) {
+    showToast(`⚠️ Şablonda en fazla 15 satırlık yer var, ${previewRows.length} kalemden sadece ilk 15'i belgeye sığdı`);
   }
 
-  return groupOrder.length;
+  // Tüm kalemler tek bir belgede birleştirilir. Belge başlığındaki Kabul No/Fatura No/Fatura Tarihi
+  // TEK ve BENZERSİZ olmalı — elle girilmişse onu, girilmemişse ilk (en eski) partinin bilgisini kullanır.
+  const baslik = (manuelBaslik && (manuelBaslik.kabulNo || manuelBaslik.faturaNo))
+    ? manuelBaslik
+    : { kabulNo: previewRows[0].kabulNo, faturaNo: previewRows[0].faturaNo, faturaTarihi: previewRows[0].faturaTarihi };
+
+  const grup = { kabulNo: baslik.kabulNo, faturaNo: baslik.faturaNo, faturaTarihi: baslik.faturaTarihi, rows: previewRows };
+
+  try {
+    const blob = await sablonExceliUret(grup, firma, lokasyon, sorumlu, belgeTarihi);
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const safeFirma = firma.replace(/[^a-zA-Z0-9ğüşıöçĞÜŞİÖÇ]+/g, '_');
+    a.href = url;
+    a.download = `IADE_FORMU_${safeFirma}_${belgeTarihi}.xlsx`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  } catch (e) {
+    showToast('⚠️ Belge oluşturulamadı: ' + e.message);
+    return 0;
+  }
+
+  return 1;
 }
 
 // ---- TOPLU AKTARMA (EXCEL / CSV) ----
