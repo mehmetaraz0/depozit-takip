@@ -90,6 +90,8 @@
   .fifo-warn { background: var(--amber-light); color: var(--amber); border-radius: 6px; padding: 6px 8px; font-size: 12px; margin-top: 6px; }
   .ref-chip { font-size: 10.5px; color: var(--gray); }
   .ref-chip.amber { color: var(--amber); }
+  .referans-detay-satir td { background: #fafafa; }
+  .referans-detay-satir:hover td { background: #fafafa; }
 
   .import-drop {
     border: 2px dashed var(--border); border-radius: 10px; padding: 18px; text-align: center;
@@ -428,6 +430,7 @@ let iadeArsivi = [];
 let currentIslem = 'GELEN';
 let topluOnizleme = []; // [{row, status:'ok'|'err', kayit, hata}]
 let seciliKayitlar = new Set();
+let genisletilmisKayitlar = new Set(); // Referans hücresi "N parti" açılmış iade kayıt id'leri
 
 
 function setIslem(v) {
@@ -824,6 +827,7 @@ function render() {
   // artık var olmayan kayıtların seçimini temizle
   const mevcutIdler = new Set(kayitlar.map(k => k.id));
   seciliKayitlar.forEach(id => { if (!mevcutIdler.has(id)) seciliKayitlar.delete(id); });
+  genisletilmisKayitlar.forEach(id => { if (!mevcutIdler.has(id)) genisletilmisKayitlar.delete(id); });
 
   const tbody = document.getElementById('tableBody');
   if (filtered.length === 0) {
@@ -831,7 +835,8 @@ function render() {
     document.getElementById('tableEmpty').style.display = 'block';
   } else {
     document.getElementById('tableEmpty').style.display = 'none';
-    tbody.innerHTML = filtered.map(k => `
+    tbody.innerHTML = filtered.map(k => {
+      const ana = `
       <tr>
         <td><input type="checkbox" class="satirSecCheckbox" data-id="${k.id}" ${seciliKayitlar.has(k.id) ? 'checked' : ''} onchange="kayitSecToggle(${k.id}, this.checked)"></td>
         <td>${formatDate(k.tarih)}</td>
@@ -842,8 +847,9 @@ function render() {
         <td>${referansEtiketi(k, breakdownMap)}</td>
         <td>${iadeReferansHucresi(k)}</td>
         <td><button class="del-btn" onclick="sil(${k.id})">✕</button></td>
-      </tr>
-    `).join('');
+      </tr>`;
+      return ana + referansDetaySatiri(k, breakdownMap);
+    }).join('');
   }
 
   const tumunuSecCheckbox = document.getElementById('tumunuSecCheckbox');
@@ -916,7 +922,48 @@ function referansEtiketi(k, breakdownMap) {
     ? (info.used[0].kabulNo || info.used[0].faturaNo || '1 parti')
     : `${info.used.length} parti`;
   const eksikVar = info.karsilanamayan > 0;
+  const acikMi = genisletilmisKayitlar.has(k.id);
+  if (info.used.length > 1) {
+    return `<span class="ref-chip${eksikVar ? ' amber' : ''}" style="cursor:pointer; user-select:none;" title="Tümünü görmek için tıklayın" onclick="referansAcKapat(${k.id})">${acikMi ? '▾' : '▸'} ${escapeHtml(kisa)}${eksikVar ? ' ⚠️' : ''}</span>`;
+  }
   return `<span class="ref-chip${eksikVar ? ' amber' : ''}" title="${escapeHtml(title)}">${escapeHtml(kisa)}${eksikVar ? ' ⚠️' : ''}</span>`;
+}
+
+function referansAcKapat(id) {
+  if (genisletilmisKayitlar.has(id)) genisletilmisKayitlar.delete(id);
+  else genisletilmisKayitlar.add(id);
+  render();
+}
+
+// İade kaydı birden fazla partiden karşılandıysa (N parti), satır genişletildiğinde
+// her partiyi tek tek (Kabul No, Fatura No, Fatura Tarihi, Miktar, Fiyat) listeleyen alt satır.
+function referansDetaySatiri(k, breakdownMap) {
+  if (k.islem !== 'İADE') return '';
+  const info = breakdownMap[k.id];
+  if (!info || info.used.length <= 1) return '';
+  if (!genisletilmisKayitlar.has(k.id)) return '';
+
+  const satirlar = info.used.map((u, i) => `
+    <tr class="referans-detay-satir">
+      <td colspan="6"></td>
+      <td colspan="3" style="padding:4px 6px 4px 26px; font-size:12.5px; color:#444; border-bottom:1px dashed #e5e5e5;">
+        <b>${i + 1}.</b> Kabul: <b>${u.kabulNo ? escapeHtml(u.kabulNo) : '—'}</b>
+        &nbsp;·&nbsp; Fatura: <b>${u.faturaNo ? escapeHtml(u.faturaNo) : '—'}</b>
+        &nbsp;·&nbsp; Fat. Tarihi: ${u.faturaTarihi ? formatDate(u.faturaTarihi) : '—'}
+        &nbsp;·&nbsp; Miktar: <b>${u.miktar}</b>
+        &nbsp;·&nbsp; Fiyat: ${formatTL(u.fiyat)}
+      </td>
+    </tr>`).join('');
+
+  const eksikSatiri = info.karsilanamayan > 0 ? `
+    <tr class="referans-detay-satir">
+      <td colspan="6"></td>
+      <td colspan="3" style="padding:4px 6px 4px 26px; font-size:12.5px; color:#c62828; border-bottom:1px dashed #e5e5e5;">
+        ⚠️ Karşılanamayan: <b>${info.karsilanamayan}</b> (stokta yetersiz parti kaldı)
+      </td>
+    </tr>` : '';
+
+  return satirlar + eksikSatiri;
 }
 
 // ---- ANALİZ ----
