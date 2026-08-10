@@ -1187,8 +1187,16 @@ function renderIadeArsivi() {
 async function arsivdenIndir(id) {
   const a = iadeArsivi.find(x => x.id === id);
   if (!a) { showToast('⚠️ Belge bulunamadı'); return; }
-  await previewRowsToDosyalar(a.previewRows, a.firma, a.lokasyon, a.sorumlu, a.belgeTarihi, a.manuelBaslik);
-  showToast('⬇️ Belge tekrar indirildi');
+  try {
+    // Firebase Realtime Database, seyrek (aralıklı) indeksli dizileri bazen
+    // nesneye çevirir — previewRows'un gerçek bir dizi olduğundan emin oluyoruz.
+    const previewRows = Array.isArray(a.previewRows) ? a.previewRows : Object.values(a.previewRows || {});
+    if (previewRows.length === 0) { showToast('⚠️ Bu belgede kalem bulunamadı'); return; }
+    const belgeSayisi = await previewRowsToDosyalar(previewRows, a.firma, a.lokasyon, a.sorumlu, a.belgeTarihi, a.manuelBaslik);
+    if (belgeSayisi > 0) showToast('⬇️ Belge tekrar indirildi');
+  } catch (e) {
+    showToast('⚠️ Belge indirilemedi: ' + e.message);
+  }
 }
 
 async function arsivdenSil(id) {
@@ -1416,6 +1424,23 @@ async function sablonExceliUret(grup, firma, lokasyon, sorumlu, belgeTarihi) {
   }
   zip.file('xl/workbook.xml', wbXml);
 
+  // ---- BOZUK DOSYA SORUNUNUN ASIL KAYNAĞI ----
+  // Satırlar kaydırılıp yeni satırlar eklendiğinde, xl/calcChain.xml içindeki
+  // hücre referansları (ör. E26, E30) ARTIK O KONUMDA DEĞİL — formüller kaymış
+  // durumda. Excel dosyayı açarken calcChain'deki referanslarla gerçek formül
+  // hücrelerinin uyuşmadığını görünce "onarma" istiyor. Çözüm: calcChain.xml'i
+  // (ve ona yapılan tüm referansları) tamamen kaldırmak — fullCalcOnLoad="1"
+  // zaten ayarlı olduğundan Excel açılışta hesap zincirini kendisi yeniden kurar.
+  zip.remove('xl/calcChain.xml');
+
+  let contentTypesXml = await zip.file('[Content_Types].xml').async('string');
+  contentTypesXml = contentTypesXml.replace(/<Override PartName="\/xl\/calcChain\.xml"[^>]*\/>/, '');
+  zip.file('[Content_Types].xml', contentTypesXml);
+
+  let workbookRelsXml = await zip.file('xl/_rels/workbook.xml.rels').async('string');
+  workbookRelsXml = workbookRelsXml.replace(/<Relationship[^>]*Target="calcChain\.xml"[^>]*\/>/, '');
+  zip.file('xl/_rels/workbook.xml.rels', workbookRelsXml);
+
   return await zip.generateAsync({ type: 'blob', mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
 }
 
@@ -1437,10 +1462,16 @@ async function tekBelgeUret(grup, firma, lokasyon, sorumlu, belgeTarihi) {
     const safeFirma = firma.replace(/[^a-zA-Z0-9ğüşıöçĞÜŞİÖÇ]+/g, '_');
     a.href = url;
     a.download = `IADE_FORMU_${safeFirma}_${belgeTarihi}.xlsx`;
+    a.rel = 'noopener';
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    // ÖNEMLİ: URL'yi hemen iptal etmiyoruz. Bazı mobil tarayıcılar (özellikle
+    // Android/iOS) indirmeyi arka planda asenkron başlatır; URL bu sırada
+    // iptal edilirse tarayıcı hiçbir hata vermeden indirmeyi sessizce
+    // düşürür — "hiçbir şey olmuyor" hissi tam olarak buradan geliyordu.
+    // Tarayıcıya indirmeyi gerçekten başlatması için birkaç saniye tanıyoruz.
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
     return 1;
   } catch (e) {
     showToast('⚠️ Belge oluşturulamadı: ' + e.message);
