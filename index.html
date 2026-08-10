@@ -321,6 +321,10 @@
   </h2>
 
   <div id="analizIcerik" style="display:none;">
+    <div style="font-size:11px; color:var(--gray); text-transform:uppercase; font-weight:600; margin-bottom:6px; letter-spacing:.03em;">Şişe Kayıp Analizi (Kasa Bazlı Tahmini)</div>
+    <div class="cards" id="siseKayipKartlar"></div>
+    <div class="hint" style="margin-top:2px; margin-bottom:16px;">Mevcut kasa stoğu × 24 = olması gereken şişe sayısı. Bu, elimizdeki gerçek şişe stoğundan fazlaysa aradaki fark muhtemel kayıp/kırılma/eksik iade olarak yorumlanır. Oran, bu farkın bugüne kadar alınan toplam şişeye bölünmesiyle hesaplanır. (DIG03000002 200 ML ve DIG03000003 300 ML birlikte, tek şişe havuzu olarak hesaplanmıştır — kasa büyüklüğü farklıysa haber verin, ayırırız.)</div>
+
     <div style="font-size:11px; color:var(--gray); text-transform:uppercase; font-weight:600; margin-bottom:6px; letter-spacing:.03em;">Firma Bazlı Bekleyen Depozito Değeri (TL)</div>
     <table>
       <thead><tr><th>Firma</th><th style="text-align:right;">Bekleyen Değer</th></tr></thead>
@@ -1040,6 +1044,56 @@ function aylikTrend() {
   };
 }
 
+// ---- ŞİŞE KAYIP ANALİZİ ----
+// Mantık: mevcut kasa stoğu × 24 = elde olması "beklenen" şişe sayısı.
+// Bu, gerçekte elde bulunan şişe stoğundan fazlaysa aradaki fark muhtemel
+// kayıp/kırılma/eksik iade olarak yorumlanır. Oran = kayıp / bugüne kadar
+// alınan toplam şişe sayısı.
+// Not: DIG03000002 (200 ML) ve DIG03000003 (300 ML) tek bir "şişe" havuzunda
+// birleştirilerek hesaplanıyor (aynı kasaya girdikleri varsayımıyla).
+const SISE_KAYIP_KASA_KOD = 'DIG04000002';
+const SISE_KAYIP_SISE_KODLARI = ['DIG03000002', 'DIG03000003'];
+const SISE_KAYIP_KASA_ADEDI = 24;
+
+function siseKayipAnalizi(pool) {
+  let mevcutKasa = 0;
+  let mevcutSise = 0;
+  Object.keys(pool).forEach(key => {
+    const urunKod = key.split('||')[1];
+    const kalanToplam = pool[key].reduce((s, b) => s + Math.max(0, b.kalan), 0);
+    if (urunKod === SISE_KAYIP_KASA_KOD) mevcutKasa += kalanToplam;
+    else if (SISE_KAYIP_SISE_KODLARI.includes(urunKod)) mevcutSise += kalanToplam;
+  });
+
+  let toplamAlinanSise = 0;
+  kayitlar.forEach(k => {
+    if (k.islem === 'GELEN' && SISE_KAYIP_SISE_KODLARI.includes(k.urunKod)) toplamAlinanSise += k.miktar;
+  });
+
+  const beklenenSise = mevcutKasa * SISE_KAYIP_KASA_ADEDI;
+  const kayipSise = Math.max(0, beklenenSise - mevcutSise);
+  const kayipOrani = toplamAlinanSise > 0 ? (kayipSise / toplamAlinanSise) * 100 : 0;
+
+  return { mevcutKasa, beklenenSise, mevcutSise, toplamAlinanSise, kayipSise, kayipOrani };
+}
+
+function renderSiseKayip(pool) {
+  const el = document.getElementById('siseKayipKartlar');
+  if (!el) return;
+  const a = siseKayipAnalizi(pool);
+  const kayipVar = a.kayipSise > 0;
+  el.innerHTML = `
+    <div class="card"><div class="label">Mevcut Kasa Stoğu</div><div class="value">${a.mevcutKasa}</div></div>
+    <div class="card"><div class="label">Beklenen Şişe (Kasa × 24)</div><div class="value">${a.beklenenSise}</div></div>
+    <div class="card"><div class="label">Mevcut Şişe Stoğu</div><div class="value">${a.mevcutSise}</div></div>
+    <div class="card"><div class="label">Toplam Alınan Şişe</div><div class="value">${a.toplamAlinanSise}</div></div>
+    <div class="card" style="grid-column: 1 / -1; ${kayipVar ? 'border-color:var(--red);' : ''}">
+      <div class="label">Tahmini Kayıp Şişe / Oran</div>
+      <div class="value" style="${kayipVar ? 'color:var(--red);' : ''}">${a.kayipSise.toLocaleString('tr-TR')} adet &nbsp;·&nbsp; %${a.kayipOrani.toLocaleString('tr-TR', {maximumFractionDigits: 1, minimumFractionDigits: 1})}</div>
+    </div>
+  `;
+}
+
 function firmaBekleyenDeger(pool) {
   const firmaMap = {};
   Object.keys(pool).forEach(key => {
@@ -1083,6 +1137,9 @@ function analizToggle() {
 }
 
 function renderAnaliz(pool) {
+  // Şişe kayıp analizi
+  renderSiseKayip(pool);
+
   // Firma bazlı bekleyen değer
   const firmaDeger = firmaBekleyenDeger(pool);
   const firmaBody = document.getElementById('analizFirmaBody');
