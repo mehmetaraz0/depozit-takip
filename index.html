@@ -226,14 +226,14 @@
     </div>
   </div>
   <div id="iadeHintGrup" style="display:none;">
-    <div class="fifo-warn" style="background:var(--green-light); color:var(--green);">↺ Kaydettiğinizde tüm kalemler FIFO mantığıyla en eski gelen kayıttan otomatik düşülecek VE hepsi <b>TEK bir Excel belgesinde</b> birleşik olarak otomatik indirilecek.</div>
+    <div class="fifo-warn" style="background:var(--green-light); color:var(--green);">↺ Kaydettiğinizde tüm kalemler FIFO mantığıyla en eski gelen kayıttan otomatik düşülecek ve <b>TEK bir Excel belgesi</b> inecek. Belgenin üst kısmında hangi kabul/fatura numaraları karıştıysa <b>her biri sadece bir kez</b> listelenir (tekrar etmez); alttaki kalem listesinde ise her ürün kendi miktar/fiyatıyla ayrı satırda görünür.</div>
     <div class="form-row three" style="margin-top:8px;">
       <div>
-        <label>Kabul No <span style="font-weight:400;">(belgede tek yazılır — boşsa en eski partiden alınır)</span></label>
+        <label>Kabul No <span style="font-weight:400;">(opsiyonel — boş bırakırsanız otomatik gruplanır)</span></label>
         <input type="text" id="mh_kabulno" placeholder="Örn: 110300982">
       </div>
       <div>
-        <label>Fatura No <span style="font-weight:400;">(belgede tek yazılır)</span></label>
+        <label>Fatura No <span style="font-weight:400;">(opsiyonel — girerseniz tek belgeye zorlar)</span></label>
         <input type="text" id="mh_faturano" placeholder="Örn: E802026000015452">
       </div>
       <div>
@@ -1212,22 +1212,129 @@ function sablonFormulCachedGuncelle(xml, ref, number) {
   return xml.slice(0, m.index) + replacement + xml.slice(m.index + m[0].length);
 }
 
+// Şablon XML'inde threshold'dan BÜYÜK tüm satır/hücre/formül referanslarını delta kadar kaydırır.
+// Bu sayede satır eklendiğinde altındaki her şey (formüller, birleştirilmiş hücreler dahil) doğru yere kayar.
+function sablonSatirlariKaydir(xml, threshold, delta) {
+  if (delta === 0) return xml;
+
+  xml = xml.replace(/<row r="(\d+)"/g, (m, n) => {
+    n = parseInt(n, 10);
+    return n > threshold ? `<row r="${n + delta}"` : m;
+  });
+
+  xml = xml.replace(/r="([A-Z]+)(\d+)"/g, (m, col, n) => {
+    n = parseInt(n, 10);
+    return n > threshold ? `r="${col}${n + delta}"` : m;
+  });
+
+  const kayanHucre = (m, col, n) => {
+    n = parseInt(n, 10);
+    return n > threshold ? `${col}${n + delta}` : m;
+  };
+  xml = xml.replace(/ref="([A-Z0-9:]+)"/g, (m, icerik) => {
+    const yeni = icerik.replace(/([A-Z]{1,3})(\d+)/g, kayanHucre);
+    return `ref="${yeni}"`;
+  });
+  xml = xml.replace(/(<f[^>]*>)([^<]*)<\/f>/g, (m, acilis, icerik) => {
+    const yeni = icerik.replace(/([A-Z]{1,3})(\d+)/g, kayanHucre);
+    return `${acilis}${yeni}</f>`;
+  });
+
+  return xml;
+}
+
+// Şablondaki bir satırı stiliyle birlikte kopyalar, tüm hücrelerini BOŞ olarak yeni bir satır numarasına yazar.
+function sablonSatirKopyalaBos(xml, sablonNo, yeniNo) {
+  const re = new RegExp('<row r="' + sablonNo + '"([^>]*)>([\\s\\S]*?)</row>');
+  const m = xml.match(re);
+  if (!m) return '';
+  const rowAttrs = m[1];
+  const yeniHucreler = m[2].replace(/<c r="([A-Z]+)\d+"([^>]*?)(?:\/>|>[\s\S]*?<\/c>)/g, (mm, col, attrs) => {
+    const temiz = attrs.replace(/\st="[^"]*"/, '');
+    return `<c r="${col}${yeniNo}"${temiz}/>`;
+  });
+  return `<row r="${yeniNo}"${rowAttrs}>${yeniHucreler}</row>`;
+}
+
+// Yeni bir kalem satırı üretir (kendi formülüyle birlikte) — şablondaki 11-25 satır stiliyle uyumlu.
+function sablonKalemSatiriUret(yeniNo) {
+  return `<row r="${yeniNo}" spans="2:7" ht="26.25" customHeight="1" x14ac:dyDescent="0.25">` +
+    `<c r="B${yeniNo}" s="43"/><c r="C${yeniNo}" s="47"/><c r="D${yeniNo}" s="44"/>` +
+    `<c r="E${yeniNo}" s="42"><f>D${yeniNo}*C${yeniNo}</f><v>0</v></c></row>`;
+}
+
+// threshold'un üzerini delta kadar kaydırıp, açılan boşluğa yeniSatirlarXml'i ekler.
+function sablonSatirEkle(xml, threshold, delta, yeniSatirlarXml) {
+  xml = sablonSatirlariKaydir(xml, threshold, delta);
+  const ilkVarOlan = threshold + delta + 1; // kaydırmadan sonra ilk gerçek satır burada başlar
+  return xml.replace(`<row r="${ilkVarOlan}"`, yeniSatirlarXml + `<row r="${ilkVarOlan}"`);
+}
+
 async function sablonExceliUret(grup, firma, lokasyon, sorumlu, belgeTarihi) {
   const zip = await JSZip.loadAsync(base64ToUint8Array(IADE_SABLON_B64));
   let xml = await zip.file('xl/worksheets/sheet1.xml').async('string');
 
-  xml = sablonHucreYaz(xml, 'B3', { text: firma });
-  xml = sablonHucreYaz(xml, 'C3', { text: grup.kabulNo || '' });
-  xml = sablonHucreYaz(xml, 'D3', { text: grup.faturaNo || '' });
-  xml = sablonHucreYaz(xml, 'E3', { text: grup.faturaTarihi ? formatDate(grup.faturaTarihi) : '' });
-  xml = sablonHucreYaz(xml, 'B9', { text: lokasyon });
-  xml = sablonHucreYaz(xml, 'B37', { text: sorumlu });
-  xml = sablonHucreYaz(xml, 'E35', { number: excelSerialFromISO(belgeTarihi) });
+  // Kabul No / Fatura No / Fatura Tarihi TEKİLLEŞTİRİLİR (aynısı asla iki kez yazılmaz).
+  let benzersizler;
+  if (grup.manuelBaslik) {
+    benzersizler = [{
+      kabulNo: grup.manuelBaslik.kabulNo || '',
+      faturaNo: grup.manuelBaslik.faturaNo || '',
+      faturaTarihi: grup.manuelBaslik.faturaTarihi ? formatDate(grup.manuelBaslik.faturaTarihi) : ''
+    }];
+  } else {
+    const gorulen = new Set();
+    benzersizler = [];
+    grup.rows.forEach(r => {
+      const key = (r.kabulNo || '—') + '||' + (r.faturaNo || '—') + '||' + (r.faturaTarihi || '');
+      if (!gorulen.has(key)) {
+        gorulen.add(key);
+        benzersizler.push({ kabulNo: r.kabulNo || '', faturaNo: r.faturaNo || '', faturaTarihi: r.faturaTarihi ? formatDate(r.faturaTarihi) : '' });
+      }
+    });
+  }
 
+  const HEADER_BASE = 6;   // şablonda hazır 6 fatura satırı (3-8)
+  const ITEM_BASE = 15;    // şablonda hazır 15 kalem satırı (11-25)
+  const ekstraBaslik = Math.max(0, benzersizler.length - HEADER_BASE);
+  const ekstraKalem = Math.max(0, grup.rows.length - ITEM_BASE);
+
+  // Gerekiyorsa başlık bölümünü genişlet (satır 8'den sonra)
+  if (ekstraBaslik > 0) {
+    let yeniSatirlar = '';
+    for (let i = 1; i <= ekstraBaslik; i++) yeniSatirlar += sablonSatirKopyalaBos(xml, 8, 8 + i);
+    xml = sablonSatirEkle(xml, 8, ekstraBaslik, yeniSatirlar);
+  }
+
+  // Gerekiyorsa kalem bölümünü genişlet (son kalem satırından sonra, TOPLAM'dan önce)
+  if (ekstraKalem > 0) {
+    const sonKalemSatiri = 25 + ekstraBaslik;
+    let yeniSatirlar = '';
+    for (let i = 1; i <= ekstraKalem; i++) yeniSatirlar += sablonKalemSatiriUret(sonKalemSatiri + i);
+    xml = sablonSatirEkle(xml, sonKalemSatiri, ekstraKalem, yeniSatirlar);
+  }
+
+  xml = sablonHucreYaz(xml, 'B3', { text: firma });
+
+  benzersizler.forEach((b, i) => {
+    const rn = 3 + i;
+    xml = sablonHucreYaz(xml, 'C' + rn, { text: b.kabulNo });
+    xml = sablonHucreYaz(xml, 'D' + rn, { text: b.faturaNo });
+    xml = sablonHucreYaz(xml, 'E' + rn, { text: b.faturaTarihi });
+  });
+
+  const lokasyonSatiri = 9 + ekstraBaslik;
+  const sorumluSatiri = 37 + ekstraBaslik + ekstraKalem;
+  const tarihSatiri = 35 + ekstraBaslik + ekstraKalem;
+  xml = sablonHucreYaz(xml, 'B' + lokasyonSatiri, { text: lokasyon });
+  xml = sablonHucreYaz(xml, 'B' + sorumluSatiri, { text: sorumlu });
+  xml = sablonHucreYaz(xml, 'E' + tarihSatiri, { number: excelSerialFromISO(belgeTarihi) });
+
+  // Kalem listesi: her ürün kendi satırında, kod/ad/miktar/fiyat ile (kabul-fatura tekrarı yok)
+  const ilkKalemSatiri = 11 + ekstraBaslik;
   let genelToplam = 0;
   grup.rows.forEach((r, i) => {
-    const rowNum = 11 + i; // şablonda kalemler için 15 satırlık yer var (11-25)
-    if (rowNum > 25) return; // güvenlik: 15'ten fazla kalem şablona sığmaz
+    const rowNum = ilkKalemSatiri + i;
     const toplam = r.miktar * r.fiyat;
     genelToplam += toplam;
     xml = sablonHucreYaz(xml, 'B' + rowNum, { text: r.kod + ' ' + r.ad });
@@ -1235,8 +1342,18 @@ async function sablonExceliUret(grup, firma, lokasyon, sorumlu, belgeTarihi) {
     xml = sablonHucreYaz(xml, 'D' + rowNum, { number: r.fiyat });
     xml = sablonFormulCachedGuncelle(xml, 'E' + rowNum, toplam);
   });
-  xml = sablonFormulCachedGuncelle(xml, 'E26', genelToplam);
-  xml = sablonFormulCachedGuncelle(xml, 'E30', genelToplam);
+
+  const toplamSatiri = 26 + ekstraBaslik + ekstraKalem;
+  const genelToplamSatiri = 30 + ekstraBaslik + ekstraKalem;
+  xml = sablonFormulCachedGuncelle(xml, 'E' + toplamSatiri, genelToplam);
+  xml = sablonFormulCachedGuncelle(xml, 'E' + genelToplamSatiri, genelToplam);
+
+  // TOPLAM'ın SUM aralığını genişletilmiş kalem listesini kapsayacak şekilde güncelle
+  if (ekstraKalem > 0) {
+    const sonKalemSatiriFinal = ilkKalemSatiri + grup.rows.length - 1;
+    const re = new RegExp('(<c r="E' + toplamSatiri + '"[^>]*>)<f>[^<]*</f>');
+    xml = xml.replace(re, `$1<f>SUM(E${ilkKalemSatiri}:E${sonKalemSatiriFinal})</f>`);
+  }
 
   zip.file('xl/worksheets/sheet1.xml', xml);
 
@@ -1244,8 +1361,13 @@ async function sablonExceliUret(grup, firma, lokasyon, sorumlu, belgeTarihi) {
   let wbXml = await zip.file('xl/workbook.xml').async('string');
   if (!/fullCalcOnLoad/.test(wbXml)) {
     wbXml = wbXml.replace(/<calcPr([^/]*)\/>/, '<calcPr$1 fullCalcOnLoad="1"/>');
-    zip.file('xl/workbook.xml', wbXml);
   }
+  // Yazdırma alanını da genişleyen içeriğe göre güncelle
+  const toplamEkstra = ekstraBaslik + ekstraKalem;
+  if (toplamEkstra > 0) {
+    wbXml = wbXml.replace(/\$B\$1:\$E\$37/, `$B$1:$E$${37 + toplamEkstra}`);
+  }
+  zip.file('xl/workbook.xml', wbXml);
 
   return await zip.generateAsync({ type: 'blob', mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
 }
@@ -1255,18 +1377,12 @@ async function sablonExceliUret(grup, firma, lokasyon, sorumlu, belgeTarihi) {
 async function previewRowsToDosyalar(previewRows, firma, lokasyon, sorumlu, belgeTarihi, manuelBaslik) {
   if (previewRows.length === 0) return 0;
 
-  if (previewRows.length > 15) {
-    showToast(`⚠️ Şablonda en fazla 15 satırlık yer var, ${previewRows.length} kalemden sadece ilk 15'i belgeye sığdı`);
-  }
+  const manuelVar = manuelBaslik && (manuelBaslik.kabulNo || manuelBaslik.faturaNo);
+  const grup = { rows: previewRows, manuelBaslik: manuelVar ? manuelBaslik : null };
+  return await tekBelgeUret(grup, firma, lokasyon, sorumlu, belgeTarihi);
+}
 
-  // Tüm kalemler tek bir belgede birleştirilir. Belge başlığındaki Kabul No/Fatura No/Fatura Tarihi
-  // TEK ve BENZERSİZ olmalı — elle girilmişse onu, girilmemişse ilk (en eski) partinin bilgisini kullanır.
-  const baslik = (manuelBaslik && (manuelBaslik.kabulNo || manuelBaslik.faturaNo))
-    ? manuelBaslik
-    : { kabulNo: previewRows[0].kabulNo, faturaNo: previewRows[0].faturaNo, faturaTarihi: previewRows[0].faturaTarihi };
-
-  const grup = { kabulNo: baslik.kabulNo, faturaNo: baslik.faturaNo, faturaTarihi: baslik.faturaTarihi, rows: previewRows };
-
+async function tekBelgeUret(grup, firma, lokasyon, sorumlu, belgeTarihi) {
   try {
     const blob = await sablonExceliUret(grup, firma, lokasyon, sorumlu, belgeTarihi);
     const url = URL.createObjectURL(blob);
@@ -1278,12 +1394,11 @@ async function previewRowsToDosyalar(previewRows, firma, lokasyon, sorumlu, belg
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
+    return 1;
   } catch (e) {
     showToast('⚠️ Belge oluşturulamadı: ' + e.message);
     return 0;
   }
-
-  return 1;
 }
 
 // ---- TOPLU AKTARMA (EXCEL / CSV) ----
