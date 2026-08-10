@@ -1071,25 +1071,27 @@ function siseKayipAnalizi(pool) {
   });
 
   const beklenenSise = mevcutKasa * SISE_KAYIP_KASA_ADEDI;
-  const kayipSise = Math.max(0, beklenenSise - mevcutSise);
-  const kayipOrani = toplamAlinanSise > 0 ? (kayipSise / toplamAlinanSise) * 100 : 0;
+  const fark = beklenenSise - mevcutSise; // pozitif: kayıp / negatif: fazla (kasasız) şişe stoğu
+  const kayipOrani = toplamAlinanSise > 0 ? (fark / toplamAlinanSise) * 100 : 0;
 
-  return { mevcutKasa, beklenenSise, mevcutSise, toplamAlinanSise, kayipSise, kayipOrani };
+  return { mevcutKasa, beklenenSise, mevcutSise, toplamAlinanSise, fark, kayipOrani };
 }
 
 function renderSiseKayip(pool) {
   const el = document.getElementById('siseKayipKartlar');
   if (!el) return;
   const a = siseKayipAnalizi(pool);
-  const kayipVar = a.kayipSise > 0;
+  const kayipVar = a.fark > 0; // pozitif fark = beklenenden az şişe var = muhtemel kayıp
+  const baslik = kayipVar ? 'Tahmini Kayıp Şişe / Oran' : 'Fazla (Kasasız) Şişe Stoğu / Oran';
+  const renk = kayipVar ? 'var(--red)' : 'var(--green)';
   el.innerHTML = `
     <div class="card"><div class="label">Mevcut Kasa Stoğu</div><div class="value">${a.mevcutKasa}</div></div>
     <div class="card"><div class="label">Beklenen Şişe (Kasa × 24)</div><div class="value">${a.beklenenSise}</div></div>
     <div class="card"><div class="label">Mevcut Şişe Stoğu</div><div class="value">${a.mevcutSise}</div></div>
     <div class="card"><div class="label">Toplam Alınan Şişe</div><div class="value">${a.toplamAlinanSise}</div></div>
-    <div class="card" style="grid-column: 1 / -1; ${kayipVar ? 'border-color:var(--red);' : ''}">
-      <div class="label">Tahmini Kayıp Şişe / Oran</div>
-      <div class="value" style="${kayipVar ? 'color:var(--red);' : ''}">${a.kayipSise.toLocaleString('tr-TR')} adet &nbsp;·&nbsp; %${a.kayipOrani.toLocaleString('tr-TR', {maximumFractionDigits: 1, minimumFractionDigits: 1})}</div>
+    <div class="card" style="grid-column: 1 / -1; border-color:${renk};">
+      <div class="label">${baslik}</div>
+      <div class="value" style="color:${renk};">${Math.abs(a.fark).toLocaleString('tr-TR')} adet &nbsp;·&nbsp; %${Math.abs(a.kayipOrani).toLocaleString('tr-TR', {maximumFractionDigits: 1, minimumFractionDigits: 1})}</div>
     </div>
   `;
 }
