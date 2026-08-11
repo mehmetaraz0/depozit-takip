@@ -1605,9 +1605,14 @@ function dosyaSecildi(event) {
 
 function toISODateSafe(v) {
   if (v instanceof Date && !isNaN(v)) {
-    const y = v.getUTCFullYear();
-    const m = String(v.getUTCMonth() + 1).padStart(2, '0');
-    const d = String(v.getUTCDate()).padStart(2, '0');
+    // Bazı tarayıcı/SheetJS kombinasyonlarında ondalık saniye hatası yüzünden
+    // "gece yarısı"nın birkaç saniye/dakika öncesine düşen değerler görülebiliyor.
+    // Güne en yakın UTC gün sınırına yuvarlayarak bunu etkisiz hale getiriyoruz.
+    const yuvarlanmisMs = Math.round(v.getTime() / 86400000) * 86400000;
+    const yuvarlanmis = new Date(yuvarlanmisMs);
+    const y = yuvarlanmis.getUTCFullYear();
+    const m = String(yuvarlanmis.getUTCMonth() + 1).padStart(2, '0');
+    const d = String(yuvarlanmis.getUTCDate()).padStart(2, '0');
     return `${y}-${m}-${d}`;
   }
   const s = String(v || '').trim();
@@ -1726,7 +1731,21 @@ function topluOnizleVeIsle(rows) {
       status,
       hata: hataMesaji,
       kayit,
-      goster: { tarih: tarihHam, urun: urunHam, firma: firmaHam, islem: islemHam, miktar: miktarHam, fiyat: (islem === 'GELEN' ? formatTL(kayit.fiyat || 0) : ''), kabul: kabulHam, faturaNo: faturaNoHam, faturaTarihi: faturaTarihiHam }
+      // ÖNEMLİ: burada HAM (raw) Date nesnesini değil, UTC-güvenli ayrıştırmadan
+      // geçmiş normalleştirilmiş tarihi gösteriyoruz. Ham Date nesnesini
+      // String(...) ile yazdırmak tarayıcının YEREL saat dilimine göre
+      // dönüştürüyordu (ör. "23:59:04 GMT+0300" gibi anlamsız saatler) — veri
+      // aslında bozulmuyordu, sadece önizlemede yanıltıcı görünüyordu.
+      goster: {
+        tarih: tarih ? formatDate(tarih) : String(tarihHam || ''),
+        urun: urunHam, firma: firmaHam, islem: islemHam, miktar: miktarHam,
+        fiyat: (islem === 'GELEN' ? formatTL(kayit.fiyat || 0) : ''),
+        kabul: kabulHam, faturaNo: faturaNoHam,
+        faturaTarihi: (() => {
+          const ft = toISODateSafe(faturaTarihiHam);
+          return ft ? formatDate(ft) : String(faturaTarihiHam || '');
+        })()
+      }
     });
   });
 
