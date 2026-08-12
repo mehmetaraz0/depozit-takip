@@ -579,33 +579,70 @@ function renderFiyatYonetimi() {
 }
 
 // ---- FIFO ÇEKİRDEK MANTIĞI ----
-// Tüm kayıtları tarih (ve id) sırasına göre işleyip, her firma+ürün için
-// "havuz" (gelen partiler, kalan miktarlarıyla) ve her iade kaydının
-// hangi partilerden ne kadar çektiğini üretir.
+// Tüm kayıtları işleyip, her firma+ürün için "havuz" (gelen partiler, kalan
+// miktarlarıyla) ve her iade kaydının hangi partilerden ne kadar çektiğini
+// üretir.
+//
+// ÇOK ÖNEMLİ (geçmişe dönük giriş güvenliği): Bir iade kaydı OLUŞTUĞU ANDA
+// hangi partilerden düşüldüğü hesaplanıp kayda "dondurulmuş" (breakdown
+// alanı) olarak YAZILIR — kaydet() fonksiyonuna bakın. Bu fonksiyon, eğer
+// bir iade kaydının breakdown'ı zaten varsa onu AYNEN uygular, YENİDEN
+// HESAPLAMAZ. Böylece siz ay ortasında (ya da sonrasında) geriye dönük
+// tarihli bir giriş eklediğinizde, bu yalnızca YENİ girecek iadeleri
+// etkiler — daha önce kesilip firmaya gönderilmiş bir iade faturasının
+// hangi kabul/fatura no'dan düştüğü ASLA geriye dönük değişmez. Aksi halde
+// tam sizin tarif ettiğiniz durum oluşurdu: eski fatura hiç düşülmemiş gibi
+// görünür, aynı parti başka bir fatura üzerinden ikinci kez düşülebilirdi.
+//
+// İade kayıtları, GERÇEKTE OLUŞTURULMA sırasına (id sırasına) göre işlenir
+// — bu, gerçek dünyada olayların yaşanma sırasını yansıtır. Henüz
+// breakdown'ı dondurulmamış (örn. şu an oluşturuluyor, ya da bu güncelleme
+// öncesinden kalma eski kayıt) bir iade için, o ANDA havuzda mevcut olan
+// (tarihe göre en eski) partilerden FIFO ile hesaplama yapılır.
 function buildPool() {
-  const pool = {};        // key -> [{recId, tarih, kabulNo, faturaNo, faturaTarihi, kalan}]
-  const breakdownMap = {}; // iadeRecId -> {used:[...], karsilanamayan}
+  const pool = {};
+  const breakdownMap = {};
 
-  const sorted = [...kayitlar].sort((a, b) => {
-    if (a.tarih !== b.tarih) return a.tarih < b.tarih ? -1 : 1;
-    return a.id - b.id;
+  // 1) GELEN kayıtlarını TARİHE göre (aynı tarihliler id'ye göre) sıralı
+  //    şekilde havuza yerleştir — hangi parti fiziksel olarak daha eski
+  //    sorusunun cevabı budur.
+  const gelenSirali = kayitlar
+    .filter(k => k.islem === 'GELEN')
+    .sort((a, b) => (a.tarih !== b.tarih ? (a.tarih < b.tarih ? -1 : 1) : a.id - b.id));
+
+  gelenSirali.forEach(k => {
+    const key = k.firma.toLowerCase() + '||' + k.urunKod;
+    if (!pool[key]) pool[key] = [];
+    pool[key].push({
+      recId: k.id,
+      tarih: k.tarih,
+      kabulNo: k.kabulNo || '',
+      faturaNo: k.faturaNo || '',
+      faturaTarihi: k.faturaTarihi || k.tarih,
+      fiyat: (typeof k.fiyat === 'number' && k.fiyat > 0) ? k.fiyat : urunFiyatiAl(k.urunKod),
+      kalan: k.miktar
+    });
   });
 
-  sorted.forEach(k => {
+  // 2) İADE kayıtlarını OLUŞTURULMA (id) sırasına göre işle.
+  const iadeSirali = kayitlar
+    .filter(k => k.islem === 'İADE')
+    .sort((a, b) => a.id - b.id);
+
+  iadeSirali.forEach(k => {
     const key = k.firma.toLowerCase() + '||' + k.urunKod;
     if (!pool[key]) pool[key] = [];
 
-    if (k.islem === 'GELEN') {
-      pool[key].push({
-        recId: k.id,
-        tarih: k.tarih,
-        kabulNo: k.kabulNo || '',
-        faturaNo: k.faturaNo || '',
-        faturaTarihi: k.faturaTarihi || k.tarih,
-        fiyat: (typeof k.fiyat === 'number' && k.fiyat > 0) ? k.fiyat : urunFiyatiAl(k.urunKod),
-        kalan: k.miktar
+    if (Array.isArray(k.breakdown)) {
+      // DONDURULMUŞ (sabit) dağılım — pool'daki ilgili partilerden aynen düş,
+      // yeniden hesaplama YAPMA.
+      k.breakdown.forEach(u => {
+        const batch = pool[key].find(b => b.recId === u.girisRecId);
+        if (batch) batch.kalan -= u.miktar;
       });
+      breakdownMap[k.id] = { used: k.breakdown, karsilanamayan: k.karsilanamayan || 0 };
     } else {
+      // Henüz dondurulmamış — o anki mevcut partilerden FIFO ile hesapla.
       let need = k.miktar;
       const used = [];
       for (const b of pool[key]) {
@@ -614,13 +651,49 @@ function buildPool() {
         const al = Math.min(b.kalan, need);
         b.kalan -= al;
         need -= al;
-        used.push({ kabulNo: b.kabulNo, faturaNo: b.faturaNo, faturaTarihi: b.faturaTarihi, fiyat: b.fiyat, miktar: al });
+        used.push({ girisRecId: b.recId, kabulNo: b.kabulNo, faturaNo: b.faturaNo, faturaTarihi: b.faturaTarihi, fiyat: b.fiyat, miktar: al });
       }
       breakdownMap[k.id] = { used, karsilanamayan: need };
     }
   });
 
   return { pool, breakdownMap };
+}
+
+// ---- BİR KERELİK GEÇİŞ: eski (bu güncellemeden önce oluşturulmuş) iade
+// kayıtlarını da "dondur". Aksi halde onlar hâlâ her seferinde yeniden
+// hesaplanmaya devam eder ve geriye dönük giriş eklendiğinde savunmasız
+// kalırlar. Firebase'den veri her geldiğinde çağrılır ama sadece
+// breakdown'ı EKSİK olan kayıt varsa bir şey yazar; aksi halde sessizce
+// çıkar. Birden fazla cihaz aynı anda çalıştırsa bile sonuç aynı (id
+// sırasına göre deterministik) olduğundan güvenlidir.
+let iadeDondurmaCalisiyor = false;
+async function eskiIadeleriDondur() {
+  if (iadeDondurmaCalisiyor || !db) return;
+  const dondurulmamis = kayitlar.some(k => k.islem === 'İADE' && !Array.isArray(k.breakdown));
+  if (!dondurulmamis) return;
+
+  iadeDondurmaCalisiyor = true;
+  try {
+    const { breakdownMap } = buildPool();
+    let degisen = false;
+    kayitlar.forEach(k => {
+      if (k.islem === 'İADE' && !Array.isArray(k.breakdown)) {
+        const info = breakdownMap[k.id];
+        if (info) {
+          k.breakdown = info.used;
+          k.karsilanamayan = info.karsilanamayan;
+          degisen = true;
+        }
+      }
+    });
+    if (degisen) {
+      await saveData();
+      console.log('🔒 Eski iade kayıtları FIFO dağılımıyla donduruldu.');
+    }
+  } finally {
+    iadeDondurmaCalisiyor = false;
+  }
 }
 
 function loadData() {
@@ -643,6 +716,7 @@ function loadData() {
     const val = snap.val();
     kayitlar = val ? Object.values(val) : [];
     render();
+    eskiIadeleriDondur();
   });
 
   db.ref(FIREBASE_REF_FIYATLAR).on('value', snap => {
@@ -727,27 +801,47 @@ async function kaydet() {
     eklenenIdler.push(id);
   });
 
+  // ÖNEMLİ: İade kayıtları için FIFO dağılımını (hangi partiden ne kadar
+  // düşüldüğünü) TAM BURADA, kayıt Firebase'e yazılmadan ÖNCE hesaplayıp
+  // kaydın kendisine "dondurulmuş" olarak yazıyoruz (kayit.breakdown).
+  // Bundan sonra bu kayıt, geriye dönük eklenecek başka girişlerden
+  // ETKİLENMEYECEK — buildPool() dondurulmuş breakdown'ı aynen kullanır,
+  // yeniden hesaplamaz. Aksi halde: siz ay ortasında geçmiş tarihli bir
+  // giriş eklediğinizde, daha önce firmaya gönderilmiş bu iade faturasının
+  // hangi kabul/fatura no'yu gösterdiği sessizce değişebilir ve aynı parti
+  // başka bir fatura üzerinden ikinci kez düşülebilirdi.
+  if (currentIslem === 'İADE') {
+    const { breakdownMap: tazeBreakdown } = buildPool();
+    eklenenIdler.forEach(id => {
+      const info = tazeBreakdown[id];
+      const kayit = kayitlar.find(k => k.id === id);
+      if (info && kayit) {
+        kayit.breakdown = info.used;
+        kayit.karsilanamayan = info.karsilanamayan;
+      }
+    });
+  }
+
   await saveData();
 
   if (currentIslem === 'GELEN') {
     showToast(`🟢 ${satirlar.length} kalemlik gelen kaydı eklendi`);
   } else {
-    // İkinci kez İade Formu'na girmeye gerek kalmasın — belge(ler) otomatik üretilsin
-    const { breakdownMap } = buildPool();
+    // İkinci kez İade Formu'na girmeye gerek kalmasın — belge(ler) otomatik üretilsin.
+    // Az önce dondurduğumuz breakdown'ları kullanıyoruz (yeniden hesaplamıyoruz).
     const previewRows = [];
     let karsilanamayanToplam = 0;
     eklenenIdler.forEach(id => {
-      const info = breakdownMap[id];
       const kayit = kayitlar.find(k => k.id === id);
-      if (info) {
-        info.used.forEach(u => {
+      if (kayit && Array.isArray(kayit.breakdown)) {
+        kayit.breakdown.forEach(u => {
           previewRows.push({
             kod: kayit.urunKod, ad: urunAdiByKod(kayit.urunKod),
             kabulNo: u.kabulNo, faturaNo: u.faturaNo, faturaTarihi: u.faturaTarihi,
             miktar: u.miktar, fiyat: u.fiyat, toplam: u.miktar * u.fiyat
           });
         });
-        karsilanamayanToplam += info.karsilanamayan;
+        karsilanamayanToplam += (kayit.karsilanamayan || 0);
       }
     });
 
