@@ -343,6 +343,17 @@
     <div style="font-size:11px; color:var(--gray); text-transform:uppercase; font-weight:600; margin:18px 0 6px; letter-spacing:.03em;">Aylık GELEN / İADE Trendi</div>
     <div id="analizTrendGrafik"></div>
 
+    <div style="font-size:11px; color:var(--gray); text-transform:uppercase; font-weight:600; margin:18px 0 6px; letter-spacing:.03em;">Aylık Meşrubat Şişe Girişi (Ay Ay Kaç Adet Geldi)</div>
+    <div style="display:flex; gap:14px; font-size:11px; margin-bottom:6px;">
+      <span><span style="display:inline-block;width:10px;height:10px;background:var(--green);border-radius:2px;margin-right:4px;"></span>GELEN</span>
+      <span><span style="display:inline-block;width:10px;height:10px;background:var(--red);border-radius:2px;margin-right:4px;"></span>İADE</span>
+    </div>
+    <div id="analizSiseAyGrafik"></div>
+    <table style="margin-top:8px;">
+      <thead><tr><th>Ay</th><th style="text-align:right;">Gelen Şişe</th><th style="text-align:right;">İade Edilen</th></tr></thead>
+      <tbody id="analizSiseAyTablo"></tbody>
+    </table>
+
     <div style="font-size:11px; color:var(--gray); text-transform:uppercase; font-weight:600; margin:18px 0 6px; letter-spacing:.03em;">En Eski Bekleyen Depozitolar (henüz iade edilmemiş)</div>
     <table>
       <thead><tr><th>Firma</th><th>Ürün</th><th>Kabul No</th><th>Tarih</th><th style="text-align:right;">Bekleyen</th><th style="text-align:right;">Süre</th></tr></thead>
@@ -1138,6 +1149,24 @@ function aylikTrend() {
   };
 }
 
+// Sadece meşrubat şişesi (200 ML + 300 ML) için aylık GELEN/İADE trendi.
+// Aynı ürün kodu grubu şişe kayıp analizinde kullanılanla tutarlı.
+function aylikSiseTrend() {
+  const map = {};
+  kayitlar.forEach(k => {
+    if (!k.tarih || !SISE_KAYIP_SISE_KODLARI.includes(k.urunKod)) return;
+    const ay = k.tarih.slice(0, 7);
+    if (!map[ay]) map[ay] = { gelen: 0, iade: 0 };
+    if (k.islem === 'GELEN') map[ay].gelen += k.miktar; else map[ay].iade += k.miktar;
+  });
+  const aylar = Object.keys(map).sort();
+  return {
+    categories: aylar.map(aySembol),
+    gelenVals: aylar.map(a => map[a].gelen),
+    iadeVals: aylar.map(a => map[a].iade)
+  };
+}
+
 // ---- ŞİŞE KAYIP ANALİZİ ----
 // Mantık: mevcut kasa stoğu × 24 = elde olması "beklenen" şişe sayısı.
 // Bu, gerçekte elde bulunan şişe stoğundan fazlaysa aradaki fark muhtemel
@@ -1266,6 +1295,21 @@ function renderAnaliz(pool) {
       { label: 'GELEN', color: '#2e7d32', values: trend.gelenVals },
       { label: 'İADE', color: '#c62828', values: trend.iadeVals }
     ]);
+  }
+
+  // Aylık meşrubat şişe girişi
+  const siseTrend = aylikSiseTrend();
+  if (siseTrend.categories.length === 0) {
+    document.getElementById('analizSiseAyGrafik').innerHTML = '<div class="empty" style="padding:14px 0;">Henüz şişe verisi yok</div>';
+    document.getElementById('analizSiseAyTablo').innerHTML = '';
+  } else {
+    document.getElementById('analizSiseAyGrafik').innerHTML = basitBarGrafikSVG(siseTrend.categories, [
+      { label: 'GELEN', color: '#2e7d32', values: siseTrend.gelenVals },
+      { label: 'İADE', color: '#c62828', values: siseTrend.iadeVals }
+    ]);
+    document.getElementById('analizSiseAyTablo').innerHTML = siseTrend.categories.map((ay, i) => `
+      <tr><td>${ay}</td><td style="text-align:right;">${siseTrend.gelenVals[i].toLocaleString('tr-TR')}</td><td style="text-align:right;">${siseTrend.iadeVals[i].toLocaleString('tr-TR')}</td></tr>
+    `).join('');
   }
 
   // En eski bekleyen depozitolar
