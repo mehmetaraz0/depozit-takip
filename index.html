@@ -336,9 +336,9 @@
     </table>
     <div class="empty" id="analizYilUrunEmpty" style="display:none;">Henüz veri yok</div>
 
-    <div style="font-size:11px; color:var(--gray); text-transform:uppercase; font-weight:600; margin:18px 0 6px; letter-spacing:.03em;">Şişe Kayıp Analizi (Kasa Bazlı Tahmini)</div>
+    <div style="font-size:11px; color:var(--gray); text-transform:uppercase; font-weight:600; margin:18px 0 6px; letter-spacing:.03em;">Şişe Kayıp Analizi (Kasa Bazlı Tahmini) — <span id="siseKayipYilEtiket">bu yıl</span></div>
     <div class="cards" id="siseKayipKartlar"></div>
-    <div class="hint" style="margin-top:2px; margin-bottom:16px;">Mevcut kasa stoğu × 24 = olması gereken şişe sayısı. Bu, elimizdeki gerçek şişe stoğundan fazlaysa aradaki fark muhtemel kayıp/kırılma/eksik iade olarak yorumlanır. Oran, bu farkın bugüne kadar alınan toplam şişeye bölünmesiyle hesaplanır. (DIG03000002 200 ML ve DIG03000003 300 ML birlikte, tek şişe havuzu olarak hesaplanmıştır — kasa büyüklüğü farklıysa haber verin, ayırırız.)</div>
+    <div class="hint" style="margin-top:2px; margin-bottom:16px;">Sadece <strong>bu yılın (<span id="siseKayipYilEtiket2">güncel yıl</span>) kendi partileri</strong> baz alınır — geçmiş yıllardan (ör. 2025) kalan kilitli bakiyeler bu hesaba karışmaz (yıllık kırılım için aşağıdaki "Yıllık Kayıp Oranı Trendi"ne bakın). Mevcut kasa stoğu × 24 = olması gereken şişe sayısı. Bu, elimizdeki gerçek şişe stoğundan fazlaysa aradaki fark muhtemel kayıp/kırılma/eksik iade olarak yorumlanır. Oran, bu farkın bu yıl alınan toplam şişeye bölünmesiyle hesaplanır. (DIG03000002 200 ML ve DIG03000003 300 ML birlikte, tek şişe havuzu olarak hesaplanmıştır — kasa büyüklüğü farklıysa haber verin, ayırırız.)</div>
 
     <div style="font-size:11px; color:var(--gray); text-transform:uppercase; font-weight:600; margin:14px 0 6px; letter-spacing:.03em;">Yıllık Kayıp Oranı Trendi</div>
     <div class="hint" style="margin-top:0; margin-bottom:8px;">Her yılın 31 Aralık'ı itibarıyla (o ana kadarki tüm kayıtlarla) aynı kayıp hesabı tekrarlanır — böylece kayıp oranının yıldan yıla arttığını mı azaldığını mı görürsünüz.</div>
@@ -1197,11 +1197,29 @@ const SISE_KAYIP_KASA_KOD = 'DIG04000002';
 const SISE_KAYIP_SISE_KODLARI = ['DIG03000002', 'DIG03000003'];
 const SISE_KAYIP_KASA_ADEDI = 24;
 
-function siseKayipAnalizi(pool) {
+// En güncel yıl: kayıtlardaki en büyük yıl (veri yoksa bugünün yılı).
+function guncelYil() {
+  const yillar = kayitlar.map(k => k.tarih ? k.tarih.slice(0, 4) : null).filter(Boolean);
+  if (yillar.length === 0) return String(new Date().getFullYear());
+  return yillar.sort().slice(-1)[0];
+}
+
+// ÖNEMLİ: Şişe Kayıp Analizi artık SADECE hedef yılın (varsayılan: en güncel
+// yıl, örn. 2026) kendi partileri/hareketleri üzerinden hesaplanır. Önceden
+// tüm yılların GELEN/kalan verisi karışık toplanıyordu — bu, 2025'ten kalan
+// (kapanmış/kilitli) devir bakiyesini de işin içine katıp "Toplam Alınan
+// Şişe" ve oranları anlamsız şekilde şişiriyordu. Havuz artık yıl bazlı
+// anahtarlandığı için (bkz. buildPool), burada sadece "||<yıl>" ile biten
+// anahtarlar süzülüyor.
+function siseKayipAnalizi(pool, hedefYil) {
+  const yil = hedefYil || guncelYil();
   let mevcutKasa = 0;
   let mevcutSise = 0;
   Object.keys(pool).forEach(key => {
-    const urunKod = key.split('||')[1];
+    const parcalar = key.split('||');
+    const urunKod = parcalar[1];
+    const keyYil = parcalar[2];
+    if (keyYil !== yil) return;
     const kalanToplam = pool[key].reduce((s, b) => s + Math.max(0, b.kalan), 0);
     if (urunKod === SISE_KAYIP_KASA_KOD) mevcutKasa += kalanToplam;
     else if (SISE_KAYIP_SISE_KODLARI.includes(urunKod)) mevcutSise += kalanToplam;
@@ -1209,20 +1227,26 @@ function siseKayipAnalizi(pool) {
 
   let toplamAlinanSise = 0;
   kayitlar.forEach(k => {
-    if (k.islem === 'GELEN' && SISE_KAYIP_SISE_KODLARI.includes(k.urunKod)) toplamAlinanSise += k.miktar;
+    if (k.islem === 'GELEN' && SISE_KAYIP_SISE_KODLARI.includes(k.urunKod) && (k.tarih || '').slice(0, 4) === yil) {
+      toplamAlinanSise += k.miktar;
+    }
   });
 
   const beklenenSise = mevcutKasa * SISE_KAYIP_KASA_ADEDI;
   const fark = beklenenSise - mevcutSise; // pozitif: kayıp / negatif: fazla (kasasız) şişe stoğu
   const kayipOrani = toplamAlinanSise > 0 ? (fark / toplamAlinanSise) * 100 : 0;
 
-  return { mevcutKasa, beklenenSise, mevcutSise, toplamAlinanSise, fark, kayipOrani };
+  return { yil, mevcutKasa, beklenenSise, mevcutSise, toplamAlinanSise, fark, kayipOrani };
 }
 
 function renderSiseKayip(pool) {
   const el = document.getElementById('siseKayipKartlar');
+  const yilEtiket = document.getElementById('siseKayipYilEtiket');
+  const yilEtiket2 = document.getElementById('siseKayipYilEtiket2');
   if (!el) return;
   const a = siseKayipAnalizi(pool);
+  if (yilEtiket) yilEtiket.textContent = a.yil + ' yılı';
+  if (yilEtiket2) yilEtiket2.textContent = a.yil;
   const kayipVar = a.fark > 0; // pozitif fark = beklenenden az şişe var = muhtemel kayıp
   const baslik = kayipVar ? 'Tahmini Kayıp Şişe / Oran' : 'Fazla (Kasasız) Şişe Stoğu / Oran';
   const renk = kayipVar ? 'var(--red)' : 'var(--green)';
