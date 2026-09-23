@@ -633,8 +633,15 @@ function buildPool() {
     .filter(k => k.islem === 'GELEN')
     .sort((a, b) => (a.tarih !== b.tarih ? (a.tarih < b.tarih ? -1 : 1) : a.id - b.id));
 
+  // ÖNEMLİ (YILLIK FIFO KİLİDİ): havuz anahtarına yıl da eklendi. Böylece bir
+  // yılın GELEN partileri SADECE o yılın İADE'leri tarafından tüketilebilir —
+  // ör. 2025'ten kalan açık depozito, 2026'da girilen yeni iadeler tarafından
+  // "yanlışlıkla" düşülemez. Her yıl kendi kapalı kutusunda kalır; 2025'in
+  // yıl sonu bakiyesi (ör. 88.896 şişe) sabit bir referans değer olarak durur,
+  // 2026'nın gerçek hareketleri sadece 2026'nın kendi partilerini tüketir.
   gelenSirali.forEach(k => {
-    const key = k.firma.toLowerCase() + '||' + k.urunKod;
+    const yil = (k.tarih || '').slice(0, 4);
+    const key = k.firma.toLowerCase() + '||' + k.urunKod + '||' + yil;
     if (!pool[key]) pool[key] = [];
     pool[key].push({
       recId: k.id,
@@ -653,14 +660,22 @@ function buildPool() {
     .sort((a, b) => a.id - b.id);
 
   iadeSirali.forEach(k => {
-    const key = k.firma.toLowerCase() + '||' + k.urunKod;
+    const yil = (k.tarih || '').slice(0, 4);
+    const key = k.firma.toLowerCase() + '||' + k.urunKod + '||' + yil;
     if (!pool[key]) pool[key] = [];
 
     if (Array.isArray(k.breakdown)) {
       // DONDURULMUŞ (sabit) dağılım — pool'daki ilgili partilerden aynen düş,
-      // yeniden hesaplama YAPMA.
+      // yeniden hesaplama YAPMA. recId benzersiz olduğundan, yıl kilidi
+      // eklenmeden ÖNCE oluşturulmuş (çapraz yıl olabilecek) eski dondurulmuş
+      // kayıtların bozulmaması için tüm havuzda (yıl anahtarına bakmaksızın)
+      // aranır.
       k.breakdown.forEach(u => {
-        const batch = pool[key].find(b => b.recId === u.girisRecId);
+        let batch = null;
+        for (const k2 of Object.keys(pool)) {
+          batch = pool[k2].find(b => b.recId === u.girisRecId);
+          if (batch) break;
+        }
         if (batch) batch.kalan -= u.miktar;
       });
       breakdownMap[k.id] = { used: k.breakdown, karsilanamayan: k.karsilanamayan || 0 };
@@ -920,13 +935,18 @@ function render() {
   const { pool, breakdownMap } = buildPool();
 
   // Bakiye tablosu artık FIFO havuzundaki "kalan" miktarların toplamı (aynı sonucu daha sağlam üretir)
+  // NOT: havuz artık yıl bazlı kilitli tutulduğu için (bkz. buildPool) aynı
+  // firma+ürün için birden fazla yıl anahtarı olabilir — bakiye tablosunda tek
+  // satır göstermek için burada firma+ürün bazında toplanıyor.
   const balanceMap = {};
   Object.keys(pool).forEach(key => {
     const [firma, urunKod] = key.split('||');
     const kalanToplam = pool[key].reduce((s, b) => s + b.kalan, 0);
     if (kalanToplam === 0) return;
+    const gosterKey = firma + '||' + urunKod;
     const orijinalFirma = kayitlar.find(k => k.firma.toLowerCase() === firma)?.firma || firma;
-    balanceMap[key] = { firma: orijinalFirma, urun: urunAdiByKod(urunKod), net: kalanToplam };
+    if (!balanceMap[gosterKey]) balanceMap[gosterKey] = { firma: orijinalFirma, urun: urunAdiByKod(urunKod), net: 0 };
+    balanceMap[gosterKey].net += kalanToplam;
   });
   const balances = Object.values(balanceMap).sort((a, b) => b.net - a.net);
 
