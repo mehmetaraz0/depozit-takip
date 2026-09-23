@@ -331,7 +331,7 @@
 
     <div style="font-size:11px; color:var(--gray); text-transform:uppercase; font-weight:600; margin:14px 0 6px; letter-spacing:.03em;">Ürün Bazlı Yıllara Göre Karşılaştırma</div>
     <table>
-      <thead id="analizYilUrunHead"></thead>
+      <thead><tr><th>Ürün</th><th>Yıl</th><th style="text-align:right;">Gelen</th><th style="text-align:right;">İade</th><th style="text-align:right;">Net Açık</th></tr></thead>
       <tbody id="analizYilUrunBody"></tbody>
     </table>
     <div class="empty" id="analizYilUrunEmpty" style="display:none;">Henüz veri yok</div>
@@ -339,6 +339,14 @@
     <div style="font-size:11px; color:var(--gray); text-transform:uppercase; font-weight:600; margin:18px 0 6px; letter-spacing:.03em;">Şişe Kayıp Analizi (Kasa Bazlı Tahmini)</div>
     <div class="cards" id="siseKayipKartlar"></div>
     <div class="hint" style="margin-top:2px; margin-bottom:16px;">Mevcut kasa stoğu × 24 = olması gereken şişe sayısı. Bu, elimizdeki gerçek şişe stoğundan fazlaysa aradaki fark muhtemel kayıp/kırılma/eksik iade olarak yorumlanır. Oran, bu farkın bugüne kadar alınan toplam şişeye bölünmesiyle hesaplanır. (DIG03000002 200 ML ve DIG03000003 300 ML birlikte, tek şişe havuzu olarak hesaplanmıştır — kasa büyüklüğü farklıysa haber verin, ayırırız.)</div>
+
+    <div style="font-size:11px; color:var(--gray); text-transform:uppercase; font-weight:600; margin:14px 0 6px; letter-spacing:.03em;">Yıllık Kayıp Oranı Trendi</div>
+    <div class="hint" style="margin-top:0; margin-bottom:8px;">Her yılın 31 Aralık'ı itibarıyla (o ana kadarki tüm kayıtlarla) aynı kayıp hesabı tekrarlanır — böylece kayıp oranının yıldan yıla arttığını mı azaldığını mı görürsünüz.</div>
+    <div id="analizKayipTrendGrafik"></div>
+    <table style="margin-top:8px;">
+      <thead><tr><th>Kesit</th><th style="text-align:right;">Mevcut Kasa</th><th style="text-align:right;">Beklenen Şişe</th><th style="text-align:right;">Mevcut Şişe</th><th style="text-align:right;">Kayıp / Oran</th></tr></thead>
+      <tbody id="analizKayipTrendBody"></tbody>
+    </table>
 
     <div style="font-size:11px; color:var(--gray); text-transform:uppercase; font-weight:600; margin-bottom:6px; letter-spacing:.03em;">Firma Bazlı Bekleyen Depozito Değeri (TL)</div>
     <table>
@@ -1210,6 +1218,94 @@ function renderSiseKayip(pool) {
   `;
 }
 
+// Belirli bir kayıt alt kümesi için (ör. bir yılın sonuna kadar olan kayıtlar)
+// basit bir FIFO havuzu kurar. Ana buildPool()'dan farkı: dondurulmuş
+// breakdown'ları dikkate almaz, sadece o kesitteki toplam "kalan" miktarları
+// hesaplamak için kullanılır (yıllık trend gibi özet analizlerde).
+function poolHesaplaBasit(kayitListesi) {
+  const pool = {};
+  const gelenSirali = kayitListesi.filter(k => k.islem === 'GELEN')
+    .sort((a, b) => (a.tarih !== b.tarih ? (a.tarih < b.tarih ? -1 : 1) : a.id - b.id));
+  gelenSirali.forEach(k => {
+    const key = k.firma.toLowerCase() + '||' + k.urunKod;
+    if (!pool[key]) pool[key] = [];
+    pool[key].push({ kalan: k.miktar });
+  });
+  const iadeSirali = kayitListesi.filter(k => k.islem === 'İADE').sort((a, b) => a.id - b.id);
+  iadeSirali.forEach(k => {
+    const key = k.firma.toLowerCase() + '||' + k.urunKod;
+    if (!pool[key]) pool[key] = [];
+    let need = k.miktar;
+    for (const b of pool[key]) {
+      if (need <= 0) break;
+      if (b.kalan <= 0) continue;
+      const al = Math.min(b.kalan, need);
+      b.kalan -= al;
+      need -= al;
+    }
+  });
+  return pool;
+}
+
+function siseKayipAnaliziIcin(kayitListesi) {
+  const pool = poolHesaplaBasit(kayitListesi);
+  let mevcutKasa = 0, mevcutSise = 0;
+  Object.keys(pool).forEach(key => {
+    const urunKod = key.split('||')[1];
+    const kalanToplam = pool[key].reduce((s, b) => s + Math.max(0, b.kalan), 0);
+    if (urunKod === SISE_KAYIP_KASA_KOD) mevcutKasa += kalanToplam;
+    else if (SISE_KAYIP_SISE_KODLARI.includes(urunKod)) mevcutSise += kalanToplam;
+  });
+  let toplamAlinanSise = 0;
+  kayitListesi.forEach(k => {
+    if (k.islem === 'GELEN' && SISE_KAYIP_SISE_KODLARI.includes(k.urunKod)) toplamAlinanSise += k.miktar;
+  });
+  const beklenenSise = mevcutKasa * SISE_KAYIP_KASA_ADEDI;
+  const fark = beklenenSise - mevcutSise;
+  const kayipOrani = toplamAlinanSise > 0 ? (fark / toplamAlinanSise) * 100 : 0;
+  return { mevcutKasa, beklenenSise, mevcutSise, toplamAlinanSise, fark, kayipOrani };
+}
+
+// Her yılın SONU itibarıyla (31 Aralık kesiti) kayıp oranı ne kadarmış —
+// böylece kayıp oranının yıldan yıla artıp artmadığı/azalıp azalmadığı görülür.
+function siseKayipYillikTrend() {
+  const yillar = [...new Set(kayitlar.map(k => k.tarih ? k.tarih.slice(0, 4) : null).filter(Boolean))].sort();
+  return yillar.map(yil => {
+    const kesit = yil + '-12-31';
+    const altKume = kayitlar.filter(k => k.tarih && k.tarih <= kesit);
+    return { yil, ...siseKayipAnaliziIcin(altKume) };
+  });
+}
+
+function renderSiseKayipYillikTrend() {
+  const grafikEl = document.getElementById('analizKayipTrendGrafik');
+  const body = document.getElementById('analizKayipTrendBody');
+  if (!grafikEl && !body) return;
+  const trend = siseKayipYillikTrend();
+  if (trend.length === 0) {
+    if (grafikEl) grafikEl.innerHTML = '<div class="empty" style="padding:14px 0;">Henüz veri yok</div>';
+    if (body) body.innerHTML = '';
+    return;
+  }
+  if (grafikEl) {
+    grafikEl.innerHTML = basitBarGrafikSVG(trend.map(t => t.yil), [
+      { label: 'Kayıp Oranı (%)', color: '#c62828', values: trend.map(t => Math.round(t.kayipOrani * 10) / 10) }
+    ]);
+  }
+  if (body) {
+    body.innerHTML = trend.map(t => {
+      const kayipVar = t.fark > 0;
+      return `<tr>
+        <td>${t.yil} sonu</td>
+        <td style="text-align:right;">${sayiFmt(t.mevcutKasa)}</td>
+        <td style="text-align:right;">${sayiFmt(t.beklenenSise)}</td>
+        <td style="text-align:right;">${sayiFmt(t.mevcutSise)}</td>
+        <td style="text-align:right; font-weight:700; color:${kayipVar ? 'var(--red)' : 'var(--green)'};">${sayiFmt(Math.abs(t.fark))} &nbsp;(%${Math.abs(t.kayipOrani).toLocaleString('tr-TR', {maximumFractionDigits: 1, minimumFractionDigits: 1})})</td>
+      </tr>`;
+    }).join('');
+  }
+}
+
 function firmaBekleyenDeger(pool) {
   const firmaMap = {};
   Object.keys(pool).forEach(key => {
@@ -1302,34 +1398,37 @@ function renderYillikKarsilastirma() {
     }
   }
 
-  // Ürün bazlı yıllara göre karşılaştırma tablosu (yıl sayısı kadar dinamik sütun)
-  const thead = document.getElementById('analizYilUrunHead');
+  // Ürün bazlı yıllara göre karşılaştırma tablosu — her ürün için yıl yıl ayrı
+  // satır (uzun/long format). Sabit sütunlu, yan yana kolon eklemeyen basit bir
+  // tablo tercih edildi; değişken sayıda yıl için colspan/rowspan başlık
+  // hizalaması kırılgan olduğundan kaçınıldı.
   const tbody = document.getElementById('analizYilUrunBody');
   const urunEmpty = document.getElementById('analizYilUrunEmpty');
-  if (!thead || !tbody) return;
+  if (!tbody) return;
   if (yillar.length === 0) {
-    thead.innerHTML = '';
     tbody.innerHTML = '';
     if (urunEmpty) urunEmpty.style.display = 'block';
     return;
   }
   if (urunEmpty) urunEmpty.style.display = 'none';
-  thead.innerHTML =
-    '<tr><th rowspan="2" style="vertical-align:bottom;">Ürün</th>' +
-    yillar.map(y => `<th colspan="2" style="text-align:center;">${y}</th>`).join('') +
-    '</tr><tr>' +
-    yillar.map(() => '<th style="text-align:right;">Gelen</th><th style="text-align:right;">İade</th>').join('') +
-    '</tr>';
   const urunKodlari = Object.keys(urunYilMap).sort((a, b) =>
     (urunYilMap[a].ad || '').localeCompare(urunYilMap[b].ad || '', 'tr'));
-  tbody.innerHTML = urunKodlari.map(kod => {
+  const satirlar = [];
+  urunKodlari.forEach(kod => {
     const u = urunYilMap[kod];
-    const hucreler = yillar.map(y => {
+    yillar.forEach((y, i) => {
       const v = u.yillar[y] || { gelen: 0, iade: 0 };
-      return `<td style="text-align:right;">${sayiFmt(v.gelen)}</td><td style="text-align:right;">${sayiFmt(v.iade)}</td>`;
-    }).join('');
-    return `<tr><td>${escapeHtml(u.ad)}</td>${hucreler}</tr>`;
-  }).join('');
+      const net = v.gelen - v.iade;
+      satirlar.push(`<tr>
+        <td>${i === 0 ? escapeHtml(u.ad) : ''}</td>
+        <td>${y}</td>
+        <td style="text-align:right;">${sayiFmt(v.gelen)}</td>
+        <td style="text-align:right;">${sayiFmt(v.iade)}</td>
+        <td style="text-align:right; font-weight:700; ${net > 0 ? 'color:var(--red);' : ''}">${sayiFmt(net)}</td>
+      </tr>`);
+    });
+  });
+  tbody.innerHTML = satirlar.join('');
 }
 
 let analizAcikMi = false;
@@ -1346,6 +1445,7 @@ function renderAnaliz(pool) {
 
   // Şişe kayıp analizi
   renderSiseKayip(pool);
+  renderSiseKayipYillikTrend();
 
   // Firma bazlı bekleyen değer
   const firmaDeger = firmaBekleyenDeger(pool);
