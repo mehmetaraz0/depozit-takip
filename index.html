@@ -1140,7 +1140,9 @@ function basitBarGrafikSVG(categories, series, opts = {}) {
   const barWidth = groupWidth / (series.length + 1);
   const usableH = height - padding - 16;
 
-  let svg = `<svg viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" style="display:block;">`;
+  const genisSvgMi = width > baseWidth;
+  const svgStyle = genisSvgMi ? 'display:block;' : 'width:100%; height:auto; display:block;';
+  let svg = `<svg viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" style="${svgStyle}">`;
   svg += `<line x1="${padding}" y1="${height - padding}" x2="${width - 6}" y2="${height - padding}" stroke="#e0e0e0"/>`;
 
   categories.forEach((cat, i) => {
@@ -1163,7 +1165,7 @@ function basitBarGrafikSVG(categories, series, opts = {}) {
   });
 
   svg += `</svg>`;
-  if (width > baseWidth) {
+  if (genisSvgMi) {
     return `<div style="overflow-x:auto; -webkit-overflow-scrolling:touch;">${svg}</div>`;
   }
   return svg;
@@ -1352,7 +1354,7 @@ function renderSiseKayipYillikTrend() {
   }
   if (grafikEl) {
     grafikEl.innerHTML = basitBarGrafikSVG(trend.map(t => t.yil), [
-      { label: 'Kayıp Oranı (%)', color: '#c62828', values: trend.map(t => Math.round(t.kayipOrani * 10) / 10) }
+      { label: 'Sapma Oranı (%, mutlak)', color: '#c62828', values: trend.map(t => Math.round(Math.abs(t.kayipOrani) * 10) / 10) }
     ]);
   }
   if (body) {
