@@ -1121,16 +1121,26 @@ function referansDetaySatiri(k, breakdownMap) {
 
 // ---- ANALİZ ----
 function basitBarGrafikSVG(categories, series, opts = {}) {
-  const width = opts.width || 640;
   const height = opts.height || 200;
   const padding = 34;
   const maxVal = Math.max(1, ...series.flatMap(s => s.values));
   const n = Math.max(1, categories.length);
+
+  // ÖNEMLİ: kategori sayısı arttıkça (ör. 20+ aylık trend) sabit genişlikte
+  // sıkıştırmak yerine grafiğin gerçek (piksel) genişliğini büyütüyoruz, SVG'yi
+  // yatay kaydırmalı bir kutuya sarıyoruz ve çok kategori varsa alt etiketleri
+  // eğik yazıyoruz. Aksi halde çubuk üstü sayılar ve ay etiketleri üst üste
+  // biniyordu.
+  const minGroupWidth = Math.max(34, series.length * 22);
+  const baseWidth = opts.width || 640;
+  const width = Math.max(baseWidth, padding * 2 + n * minGroupWidth);
+  const cokKategori = n > 10;
+
   const groupWidth = (width - padding * 2) / n;
   const barWidth = groupWidth / (series.length + 1);
   const usableH = height - padding - 16;
 
-  let svg = `<svg viewBox="0 0 ${width} ${height}" style="width:100%; height:auto; display:block;">`;
+  let svg = `<svg viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" style="display:block;">`;
   svg += `<line x1="${padding}" y1="${height - padding}" x2="${width - 6}" y2="${height - padding}" stroke="#e0e0e0"/>`;
 
   categories.forEach((cat, i) => {
@@ -1143,10 +1153,19 @@ function basitBarGrafikSVG(categories, series, opts = {}) {
       svg += `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${(barWidth * 0.7).toFixed(1)}" height="${barH.toFixed(1)}" fill="${s.color}" rx="2"></rect>`;
       if (val > 0) svg += `<text x="${(x + barWidth * 0.35).toFixed(1)}" y="${(y - 3).toFixed(1)}" font-size="9" text-anchor="middle" fill="#666">${val}</text>`;
     });
-    svg += `<text x="${(groupX + groupWidth / 2).toFixed(1)}" y="${height - padding + 14}" font-size="9" text-anchor="middle" fill="#616161">${escapeHtml(String(cat))}</text>`;
+    const labelX = (groupX + groupWidth / 2).toFixed(1);
+    const labelY = height - padding + 14;
+    if (cokKategori) {
+      svg += `<text x="${labelX}" y="${labelY}" font-size="9" text-anchor="end" fill="#616161" transform="rotate(-45 ${labelX} ${labelY})">${escapeHtml(String(cat))}</text>`;
+    } else {
+      svg += `<text x="${labelX}" y="${labelY}" font-size="9" text-anchor="middle" fill="#616161">${escapeHtml(String(cat))}</text>`;
+    }
   });
 
   svg += `</svg>`;
+  if (width > baseWidth) {
+    return `<div style="overflow-x:auto; -webkit-overflow-scrolling:touch;">${svg}</div>`;
+  }
   return svg;
 }
 
