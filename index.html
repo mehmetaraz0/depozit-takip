@@ -321,7 +321,22 @@
   </h2>
 
   <div id="analizIcerik" style="display:none;">
-    <div style="font-size:11px; color:var(--gray); text-transform:uppercase; font-weight:600; margin-bottom:6px; letter-spacing:.03em;">Şişe Kayıp Analizi (Kasa Bazlı Tahmini)</div>
+    <div style="font-size:11px; color:var(--gray); text-transform:uppercase; font-weight:600; margin-bottom:6px; letter-spacing:.03em;">📅 Yıllık Karşılaştırma</div>
+    <table>
+      <thead><tr><th>Yıl</th><th style="text-align:right;">GELEN</th><th style="text-align:right;">İADE</th><th style="text-align:right;">Net Açık</th></tr></thead>
+      <tbody id="analizYilGenelBody"></tbody>
+    </table>
+    <div class="empty" id="analizYilGenelEmpty" style="display:none;">Henüz veri yok</div>
+    <div id="analizYilGrafik" style="margin-top:10px;"></div>
+
+    <div style="font-size:11px; color:var(--gray); text-transform:uppercase; font-weight:600; margin:14px 0 6px; letter-spacing:.03em;">Ürün Bazlı Yıllara Göre Karşılaştırma</div>
+    <table>
+      <thead id="analizYilUrunHead"></thead>
+      <tbody id="analizYilUrunBody"></tbody>
+    </table>
+    <div class="empty" id="analizYilUrunEmpty" style="display:none;">Henüz veri yok</div>
+
+    <div style="font-size:11px; color:var(--gray); text-transform:uppercase; font-weight:600; margin:18px 0 6px; letter-spacing:.03em;">Şişe Kayıp Analizi (Kasa Bazlı Tahmini)</div>
     <div class="cards" id="siseKayipKartlar"></div>
     <div class="hint" style="margin-top:2px; margin-bottom:16px;">Mevcut kasa stoğu × 24 = olması gereken şişe sayısı. Bu, elimizdeki gerçek şişe stoğundan fazlaysa aradaki fark muhtemel kayıp/kırılma/eksik iade olarak yorumlanır. Oran, bu farkın bugüne kadar alınan toplam şişeye bölünmesiyle hesaplanır. (DIG03000002 200 ML ve DIG03000003 300 ML birlikte, tek şişe havuzu olarak hesaplanmıştır — kasa büyüklüğü farklıysa haber verin, ayırırız.)</div>
 
@@ -925,9 +940,14 @@ function render() {
   renderAnaliz(pool);
 
   const search = document.getElementById('searchBox').value.toLowerCase();
-  const filtered = kayitlar.filter(k =>
-    k.urunAdi.toLowerCase().includes(search) || k.firma.toLowerCase().includes(search)
-  );
+  // ÖNEMLİ: liste, kaydın işlem TARİHİNE göre (yeni üstte) sıralanır — dizideki
+  // ekleme sırasına göre DEĞİL. Toplu aktarımla geçmiş yıllara ait (ör. 2025)
+  // kayıtlar bugün eklendiğinde, eklenme sırasına göre sıralarsak bu geçmiş
+  // kayıtlar en üste çıkıp güncel (2026) kayıtları altta bırakıyordu. Tarihe
+  // göre sıralayınca en güncel yıl/tarih her zaman en üstte kalır.
+  const filtered = kayitlar
+    .filter(k => k.urunAdi.toLowerCase().includes(search) || k.firma.toLowerCase().includes(search))
+    .sort((a, b) => (b.tarih !== a.tarih ? (b.tarih < a.tarih ? -1 : 1) : b.id - a.id));
 
   // artık var olmayan kayıtların seçimini temizle
   const mevcutIdler = new Set(kayitlar.map(k => k.id));
@@ -1224,6 +1244,94 @@ function gunSayisi(tarihStr) {
   return Math.max(0, Math.floor((nowUTC - t) / 86400000));
 }
 
+// ---- YILLIK KARŞILAŞTIRMA (2025 vs 2026 vb.) ----
+function yillikOzet() {
+  const yilMap = {};       // yil -> {gelen, iade}
+  const urunYilMap = {};   // urunKod -> {ad, yillar: {yil: {gelen, iade}}}
+  kayitlar.forEach(k => {
+    if (!k.tarih) return;
+    const yil = k.tarih.slice(0, 4);
+    if (!yilMap[yil]) yilMap[yil] = { gelen: 0, iade: 0 };
+    if (k.islem === 'GELEN') yilMap[yil].gelen += k.miktar; else yilMap[yil].iade += k.miktar;
+
+    if (!urunYilMap[k.urunKod]) urunYilMap[k.urunKod] = { ad: k.urunAdi, yillar: {} };
+    if (!urunYilMap[k.urunKod].yillar[yil]) urunYilMap[k.urunKod].yillar[yil] = { gelen: 0, iade: 0 };
+    if (k.islem === 'GELEN') urunYilMap[k.urunKod].yillar[yil].gelen += k.miktar;
+    else urunYilMap[k.urunKod].yillar[yil].iade += k.miktar;
+  });
+  const yillar = Object.keys(yilMap).sort();
+  return { yillar, yilMap, urunYilMap };
+}
+
+function sayiFmt(n) {
+  return (n || 0).toLocaleString('tr-TR');
+}
+
+function renderYillikKarsilastirma() {
+  const { yillar, yilMap, urunYilMap } = yillikOzet();
+
+  const genelBody = document.getElementById('analizYilGenelBody');
+  const genelEmpty = document.getElementById('analizYilGenelEmpty');
+  if (yillar.length === 0) {
+    genelBody.innerHTML = '';
+    if (genelEmpty) genelEmpty.style.display = 'block';
+  } else {
+    if (genelEmpty) genelEmpty.style.display = 'none';
+    genelBody.innerHTML = yillar.map(y => {
+      const v = yilMap[y];
+      const net = v.gelen - v.iade;
+      return `<tr>
+        <td>${y}</td>
+        <td style="text-align:right;">${sayiFmt(v.gelen)}</td>
+        <td style="text-align:right;">${sayiFmt(v.iade)}</td>
+        <td style="text-align:right; font-weight:700; ${net > 0 ? 'color:var(--red);' : ''}">${sayiFmt(net)}</td>
+      </tr>`;
+    }).join('');
+  }
+
+  // Yıllık GELEN/İADE grafiği
+  const grafikEl = document.getElementById('analizYilGrafik');
+  if (grafikEl) {
+    if (yillar.length === 0) {
+      grafikEl.innerHTML = '<div class="empty" style="padding:14px 0;">Henüz veri yok</div>';
+    } else {
+      grafikEl.innerHTML = basitBarGrafikSVG(yillar, [
+        { label: 'GELEN', color: '#2e7d32', values: yillar.map(y => yilMap[y].gelen) },
+        { label: 'İADE', color: '#c62828', values: yillar.map(y => yilMap[y].iade) }
+      ]);
+    }
+  }
+
+  // Ürün bazlı yıllara göre karşılaştırma tablosu (yıl sayısı kadar dinamik sütun)
+  const thead = document.getElementById('analizYilUrunHead');
+  const tbody = document.getElementById('analizYilUrunBody');
+  const urunEmpty = document.getElementById('analizYilUrunEmpty');
+  if (!thead || !tbody) return;
+  if (yillar.length === 0) {
+    thead.innerHTML = '';
+    tbody.innerHTML = '';
+    if (urunEmpty) urunEmpty.style.display = 'block';
+    return;
+  }
+  if (urunEmpty) urunEmpty.style.display = 'none';
+  thead.innerHTML =
+    '<tr><th rowspan="2" style="vertical-align:bottom;">Ürün</th>' +
+    yillar.map(y => `<th colspan="2" style="text-align:center;">${y}</th>`).join('') +
+    '</tr><tr>' +
+    yillar.map(() => '<th style="text-align:right;">Gelen</th><th style="text-align:right;">İade</th>').join('') +
+    '</tr>';
+  const urunKodlari = Object.keys(urunYilMap).sort((a, b) =>
+    (urunYilMap[a].ad || '').localeCompare(urunYilMap[b].ad || '', 'tr'));
+  tbody.innerHTML = urunKodlari.map(kod => {
+    const u = urunYilMap[kod];
+    const hucreler = yillar.map(y => {
+      const v = u.yillar[y] || { gelen: 0, iade: 0 };
+      return `<td style="text-align:right;">${sayiFmt(v.gelen)}</td><td style="text-align:right;">${sayiFmt(v.iade)}</td>`;
+    }).join('');
+    return `<tr><td>${escapeHtml(u.ad)}</td>${hucreler}</tr>`;
+  }).join('');
+}
+
 let analizAcikMi = false;
 
 function analizToggle() {
@@ -1233,6 +1341,9 @@ function analizToggle() {
 }
 
 function renderAnaliz(pool) {
+  // Yıllık karşılaştırma (2025 vs 2026 vb.)
+  renderYillikKarsilastirma();
+
   // Şişe kayıp analizi
   renderSiseKayip(pool);
 
