@@ -306,7 +306,7 @@
 </div>
 
 <div class="panel">
-  <h2>Firma Bazlı Depozit Bakiyesi (Bizde kalan)</h2>
+  <h2>Firma Bazlı Depozit Bakiyesi (Bu Yıl, Bizde kalan)</h2>
   <table class="balance-table" id="balanceTable">
     <thead><tr><th>Firma</th><th>Ürün</th><th>Bakiye</th></tr></thead>
     <tbody id="balanceBody"></tbody>
@@ -934,21 +934,21 @@ function render() {
 
   const { pool, breakdownMap } = buildPool();
 
-  // Bakiye tablosu artık FIFO havuzundaki "kalan" miktarların toplamı (aynı sonucu daha sağlam üretir)
-  // NOT: havuz artık yıl bazlı kilitli tutulduğu için (bkz. buildPool) aynı
-  // firma+ürün için birden fazla yıl anahtarı olabilir — bakiye tablosunda tek
-  // satır göstermek için burada firma+ürün bazında toplanıyor.
+  // Bakiye tablosu: SADECE BU YILIN net hareketi (bu yıl GELEN - bu yıl İADE),
+  // lifetime/kümülatif FIFO "kalan" toplamı DEĞİL. Böylece önceki yıllardan
+  // kalan (ör. 2025 sonu) bakiye bu tabloya karışmaz; yıllık karşılaştırma
+  // panelindeki (yillikOzet) yıl bazlı toplama mantığıyla tutarlıdır.
+  const buYil = String(new Date().getFullYear());
   const balanceMap = {};
-  Object.keys(pool).forEach(key => {
-    const [firma, urunKod] = key.split('||');
-    const kalanToplam = pool[key].reduce((s, b) => s + b.kalan, 0);
-    if (kalanToplam === 0) return;
-    const gosterKey = firma + '||' + urunKod;
-    const orijinalFirma = kayitlar.find(k => k.firma.toLowerCase() === firma)?.firma || firma;
-    if (!balanceMap[gosterKey]) balanceMap[gosterKey] = { firma: orijinalFirma, urun: urunAdiByKod(urunKod), net: 0 };
-    balanceMap[gosterKey].net += kalanToplam;
+  kayitlar.forEach(k => {
+    if (!k.tarih || k.tarih.slice(0, 4) !== buYil) return;
+    const firmaKey = k.firma.toLowerCase();
+    const gosterKey = firmaKey + '||' + k.urunKod;
+    if (!balanceMap[gosterKey]) balanceMap[gosterKey] = { firma: k.firma, urun: urunAdiByKod(k.urunKod), net: 0 };
+    if (k.islem === 'GELEN') balanceMap[gosterKey].net += k.miktar;
+    else balanceMap[gosterKey].net -= k.miktar;
   });
-  const balances = Object.values(balanceMap).sort((a, b) => b.net - a.net);
+  const balances = Object.values(balanceMap).filter(b => b.net !== 0).sort((a, b) => b.net - a.net);
 
   const balBody = document.getElementById('balanceBody');
   if (balances.length === 0) {
