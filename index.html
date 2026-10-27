@@ -159,6 +159,7 @@
   <div style="display:flex; gap:8px; margin-bottom:10px; flex-wrap:wrap;">
     <button type="button" class="submit-btn secondary" style="width:auto; padding:8px 14px; font-size:13px;" onclick="sablonIndir()">⬇️ Şablon İndir (.xlsx)</button>
     <button type="button" class="submit-btn secondary" style="width:auto; padding:8px 14px; font-size:13px; border-color:var(--amber); color:var(--amber);" onclick="mevcutVeriyiYedekle()">💾 Önce Mevcut Veriyi Yedekle</button>
+    <button type="button" class="submit-btn secondary" style="width:auto; padding:8px 14px; font-size:13px;" onclick="veriKontrolRaporu()">🔍 Veri Kontrolü (eski hatalar)</button>
     <button type="button" class="submit-btn secondary" style="width:auto; padding:8px 14px; font-size:13px; border-color:var(--red); color:var(--red);" onclick="tekSeferlikDuzeltme()">🛠 Tek Seferlik Veri Düzeltme</button>
   </div>
 
@@ -920,6 +921,21 @@ async function kaydet() {
     faturaNo: document.getElementById('mh_faturano').value.trim(),
     faturaTarihi: document.getElementById('mh_faturatarihi').value || ''
   } : null;
+
+  if (currentIslem === 'GELEN') {
+    gelenFaturaBilgisi.kabulNo = noNormalize(gelenFaturaBilgisi.kabulNo);
+    gelenFaturaBilgisi.faturaNo = noNormalize(gelenFaturaBilgisi.faturaNo);
+    const hatalar = [], uyarilar = [], ekler = [];
+    satirlar.forEach(s => {
+      const aday = { urunKod: s.urunKod, firma, miktar: s.miktar, islem: 'GELEN', ...gelenFaturaBilgisi };
+      const r = gelenKontrol(aday, ekler);
+      r.hatalar.forEach(h => { if (!hatalar.includes(h)) hatalar.push(h); });
+      r.uyarilar.forEach(u => { if (!uyarilar.includes(u)) uyarilar.push(u); });
+      ekler.push(aday);
+    });
+    if (hatalar.length) { alert('Kayıt yapılmadı:\n\n• ' + hatalar.join('\n• ')); return; }
+    if (uyarilar.length && !confirm('Dikkat:\n\n• ' + uyarilar.join('\n• ') + '\n\nYine de kaydedilsin mi?')) return;
+  }
 
   const eklenenIdler = [];
   let ekIndex = 0;
@@ -2119,6 +2135,96 @@ function normalizeIslem(deger) {
   return null;
 }
 
+// ---- GİRİŞ KONTROLLERİ (hata yakalama) ----
+// Kabul No : 9 haneli sayı (örn. 110323426)
+// Fatura No: 16 karakter = 3 karakter seri (harfle başlar) + 4 hane yıl + 9 hane sıra
+//            (örn. E802026000043161, EFG2026000002686)
+// Kurallar (HATA = kayıt engellenir, UYARI = onay istenir):
+//  HATA : kabul/fatura no boş veya biçimi yanlış, alanlar karıştırılmış
+//  HATA : aynı ürün aynı kabul veya aynı faturada ikinci kez girilemez
+//  HATA : bir kabul no daha önce başka bir fatura no ile girildiyse
+//  HATA : bir fatura no daha önce BAŞKA TARİHTE başka bir kabul no ile girildiyse
+//  UYARI: bir fatura no aynı gün başka bir kabul no ile girildiyse (bölünmüş kabul olabilir)
+//  UYARI: fatura no'daki yıl ile fatura tarihi yılı farklıysa
+const KABUL_RE = /^\d{9}$/;
+const FATURA_RE = /^[A-Z][A-Z0-9]{2}\d{13}$/;
+function noNormalize(v) { return String(v == null ? '' : v).trim().toUpperCase().replace(/\s+/g, ''); }
+
+function kabulNoHatasi(kabul) {
+  if (!kabul) return 'Kabul No boş olamaz';
+  if (/[A-Z]/.test(kabul)) return `Kabul No alanına fatura no girilmiş gibi görünüyor (${kabul}) — kabul no 9 haneli sayıdır, örn. 110323426`;
+  if (!KABUL_RE.test(kabul)) return `Kabul No 9 haneli sayı olmalı (girilen: ${kabul}, ${kabul.length} hane)`;
+  return '';
+}
+function faturaNoHatasi(fatura) {
+  if (!fatura) return 'Fatura No boş olamaz';
+  if (/^\d+$/.test(fatura)) return `Fatura No alanına kabul no girilmiş gibi görünüyor (${fatura}) — fatura no harfle başlar, örn. E802026000043161`;
+  if (!FATURA_RE.test(fatura)) return `Fatura No 16 karakter olmalı: 3 karakter seri + 4 hane yıl + 9 hane sıra (girilen: ${fatura}, ${fatura.length} karakter)`;
+  return '';
+}
+
+// k: {urunKod, firma, kabulNo, faturaNo, faturaTarihi}; ekler: aynı formda/dosyada önceki satırlar
+function gelenKontrol(k, ekler) {
+  const hatalar = [], uyarilar = [];
+  const kabul = noNormalize(k.kabulNo), fatura = noNormalize(k.faturaNo);
+  const h1 = kabulNoHatasi(kabul); if (h1) hatalar.push(h1);
+  const h2 = faturaNoHatasi(fatura); if (h2) hatalar.push(h2);
+  if (kabul && kabul === fatura) hatalar.push('Kabul No ile Fatura No aynı olamaz');
+  if (hatalar.length) return { hatalar, uyarilar };
+
+  const firma = String(k.firma || '').toLowerCase().trim();
+  const havuz = kayitlar.filter(x => x.islem === 'GELEN').concat(ekler || []);
+  const ayniFirma = havuz.filter(x => String(x.firma || '').toLowerCase().trim() === firma);
+
+  const ayniUrun = ayniFirma.find(x => x.urunKod === k.urunKod &&
+    (noNormalize(x.kabulNo) === kabul || noNormalize(x.faturaNo) === fatura));
+  if (ayniUrun) hatalar.push(`${urunAdiByKod(k.urunKod)} bu faturada zaten var (kabul ${ayniUrun.kabulNo}, fatura ${ayniUrun.faturaNo}, ${ayniUrun.miktar} adet) — aynı ürün bir faturada iki kez girilemez`);
+
+  const kabulBaskaFatura = ayniFirma.find(x => noNormalize(x.kabulNo) === kabul && noNormalize(x.faturaNo) !== fatura);
+  if (kabulBaskaFatura) hatalar.push(`Kabul ${kabul} daha önce ${kabulBaskaFatura.faturaNo} faturasıyla girilmiş — bir kabul tek faturaya aittir`);
+
+  const faturaBaskaKabul = ayniFirma.find(x => noNormalize(x.faturaNo) === fatura && noNormalize(x.kabulNo) !== kabul);
+  if (faturaBaskaKabul) {
+    const digerTarih = faturaBaskaKabul.faturaTarihi || faturaBaskaKabul.tarih;
+    if (k.faturaTarihi && digerTarih && digerTarih !== k.faturaTarihi)
+      hatalar.push(`Fatura ${fatura} daha önce ${digerTarih} tarihinde ${faturaBaskaKabul.kabulNo} kabulüyle girilmiş — fatura no yanlış yazılmış olabilir`);
+    else uyarilar.push(`Fatura ${fatura} aynı gün ${faturaBaskaKabul.kabulNo} kabulüyle de girilmiş`);
+  }
+
+  const ftYil = String(k.faturaTarihi || '').slice(0, 4);
+  if (ftYil && fatura.slice(3, 7) !== ftYil) uyarilar.push(`Fatura no yılı (${fatura.slice(3, 7)}) fatura tarihi yılıyla (${ftYil}) uyuşmuyor`);
+  return { hatalar, uyarilar };
+}
+
+// Mevcut verideki eski hataları listeler ve Excel olarak indirir.
+function veriKontrolRaporu() {
+  const satirlar = [];
+  const gelenler = kayitlar.filter(k => k.islem === 'GELEN');
+  gelenler.forEach(k => {
+    const kabul = noNormalize(k.kabulNo), fatura = noNormalize(k.faturaNo);
+    const ekle = (tur, mesaj) => satirlar.push([tur, k.tarih, k.firma, k.urunKod, k.miktar, k.kabulNo || '', k.faturaNo || '', mesaj]);
+    const h1 = kabulNoHatasi(kabul); if (h1) ekle('Kabul No', h1);
+    const h2 = faturaNoHatasi(fatura); if (h2) ekle('Fatura No', h2);
+    const firma = String(k.firma || '').toLowerCase().trim();
+    const digerleri = gelenler.filter(x => x !== k && String(x.firma || '').toLowerCase().trim() === firma);
+    const dup = digerleri.find(x => x.urunKod === k.urunKod && kabul && noNormalize(x.kabulNo) === kabul);
+    if (dup) ekle('Mükerrer ürün', `Aynı kabulde bu ürün birden fazla satır (${dup.miktar} adetlik diğer satır)`);
+    const bf = digerleri.find(x => kabul && noNormalize(x.kabulNo) === kabul && noNormalize(x.faturaNo) !== fatura);
+    if (bf) ekle('Kabul-Fatura', `Aynı kabul başka fatura no ile de girilmiş: ${bf.faturaNo}`);
+    const bk = digerleri.find(x => fatura && noNormalize(x.faturaNo) === fatura && noNormalize(x.kabulNo) !== kabul &&
+      (x.faturaTarihi || x.tarih) !== (k.faturaTarihi || k.tarih));
+    if (bk) ekle('Fatura-Kabul', `Aynı fatura no ${bk.faturaTarihi || bk.tarih} tarihinde ${bk.kabulNo} kabulüyle de girilmiş — biri yanlış`);
+  });
+  if (!satirlar.length) { showToast('✅ Mevcut veride hata bulunamadı'); return; }
+  satirlar.sort((a, b) => (a[1] < b[1] ? 1 : -1));
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.aoa_to_sheet([['Hata Türü', 'Tarih', 'Firma', 'Ürün Kodu', 'Miktar', 'Kabul No', 'Fatura No', 'Açıklama'], ...satirlar]);
+  ws['!cols'] = [{ wch: 14 }, { wch: 11 }, { wch: 18 }, { wch: 13 }, { wch: 8 }, { wch: 12 }, { wch: 20 }, { wch: 90 }];
+  XLSX.utils.book_append_sheet(wb, ws, 'Veri Kontrolü');
+  XLSX.writeFile(wb, `veri_kontrol_${todayStr()}.xlsx`);
+  showToast(`🔍 ${satirlar.length} sorunlu satır bulundu, rapor indirildi`);
+}
+
 function topluOnizleVeIsle(rows) {
   topluOnizleme = [];
 
@@ -2190,8 +2296,21 @@ function topluOnizleVeIsle(rows) {
       kayit.iadeReferansNo = String(faturaNoHam || kabulHam || '').trim();
     }
 
+    let uyariMesaji = '';
+    if (islem === 'GELEN' && !hatalar.length) {
+      kayit.kabulNo = noNormalize(kayit.kabulNo);
+      kayit.faturaNo = noNormalize(kayit.faturaNo);
+      if (!kayitBenzerVarMi(kayit)) {
+        const onceki = topluOnizleme.filter(r => r.status !== 'err' && r.kayit.islem === 'GELEN').map(r => r.kayit);
+        const kt = gelenKontrol(kayit, onceki);
+        hatalar.push(...kt.hatalar);
+        uyariMesaji = kt.uyarilar.join('; ');
+      }
+    }
+
     let status = hatalar.length ? 'err' : 'ok';
     let hataMesaji = hatalar.join('; ');
+    if (status === 'ok' && uyariMesaji) hataMesaji = '⚠ ' + uyariMesaji;
     if (status === 'ok' && kayitBenzerVarMi(kayit)) {
       status = 'dup';
       hataMesaji = 'Sistemde aynı tarih + ürün + firma + işlem + miktar ile eşleşen bir kayıt zaten var — muhtemelen mükerrer, aktarılmayacak';
