@@ -160,7 +160,6 @@
     <button type="button" class="submit-btn secondary" style="width:auto; padding:8px 14px; font-size:13px;" onclick="sablonIndir()">⬇️ Şablon İndir (.xlsx)</button>
     <button type="button" class="submit-btn secondary" style="width:auto; padding:8px 14px; font-size:13px; border-color:var(--amber); color:var(--amber);" onclick="mevcutVeriyiYedekle()">💾 Önce Mevcut Veriyi Yedekle</button>
     <button type="button" class="submit-btn secondary" style="width:auto; padding:8px 14px; font-size:13px;" onclick="veriKontrolRaporu()">🔍 Veri Kontrolü (eski hatalar)</button>
-    <button type="button" class="submit-btn secondary" style="width:auto; padding:8px 14px; font-size:13px; border-color:var(--red); color:var(--red);" onclick="tekSeferlikDuzeltme()">🛠 Tek Seferlik Veri Düzeltme</button>
   </div>
 
   <label for="topluDosya" style="display:block;">
@@ -698,97 +697,6 @@ function buildPool() {
   });
 
   return { pool, breakdownMap };
-}
-
-// ---- TEK SEFERLİK VERİ DÜZELTME (27.10.2026, v3 — veri kontrol raporu) ----
-// A) Fatura no'da fazla/eksik 0: 17 karakter (yıldan sonra fazladan 0) ve
-//    15 karakter (eksik 0) numaralar 16 karaktere düzeltilir.
-// B) Kullanıcının bildirdiği doğru fatura no'lar (kabul no'ya göre).
-// C) Aynı kabulde aynı ürün + aynı fiyat ile bölünmüş GELEN satırları tek
-//    satırda birleştirilir (toplam miktar aynı kalır, iadelerin bağlantıları
-//    birleşen kayda taşınır).
-// Değişiklikler GELEN kayıtlarına ve iadelerin dondurulmuş breakdown'larına
-// birlikte uygulanır. İade/gelen toplamları DEĞİŞMEZ. Fonksiyon idempotent.
-const DUZELTME_FATURA_BY_KABUL = {
-  '110323426': 'E802026000041836',
-  '110316067': 'E802026000034424',
-  '110326349': 'E802026000045357'
-};
-function faturaNoOnar(f) {
-  const s = noNormalize(f);
-  let m = s.match(/^([A-Z][A-Z0-9]{2}\d{4})0(\d{9})$/);
-  if (m) return m[1] + m[2];
-  m = s.match(/^([A-Z][A-Z0-9]{2}\d{4})(\d{8})$/);
-  if (m) return m[1] + '0' + m[2];
-  return s;
-}
-function duzeltmeHazirla(kaynak) {
-  const data = JSON.parse(JSON.stringify(kaynak));
-  const log = [], hatalar = [];
-  const gelenler = data.filter(k => k.islem === 'GELEN');
-  const iadeler = data.filter(k => k.islem === 'İADE' && Array.isArray(k.breakdown));
-  const gelenById = {};
-  gelenler.forEach(g => { gelenById[String(g.id)] = g; });
-
-  // A + B) fatura no düzeltmeleri
-  const faturaDegisim = {};
-  gelenler.forEach(g => {
-    const eski = g.faturaNo || '';
-    const yeni = DUZELTME_FATURA_BY_KABUL[noNormalize(g.kabulNo)] || faturaNoOnar(eski);
-    if (yeni && yeni !== eski) {
-      g.faturaNo = yeni;
-      faturaDegisim[`${g.kabulNo}: ${eski} → ${yeni}`] = true;
-    }
-  });
-  iadeler.forEach(k => k.breakdown.forEach(u => {
-    const g = gelenById[String(u.girisRecId)];
-    if (g && u.faturaNo !== g.faturaNo) u.faturaNo = g.faturaNo;
-  }));
-  const fd = Object.keys(faturaDegisim);
-  if (fd.length) log.push(`Fatura no düzeltmesi (${fd.length} kabul):\n    ` + fd.join('\n    '));
-
-  // C) bölünmüş satırları birleştir
-  const gruplar = {};
-  gelenler.forEach(g => {
-    if (!g.kabulNo) return;
-    const key = [String(g.firma || '').toLowerCase().trim(), g.urunKod, noNormalize(g.kabulNo), noNormalize(g.faturaNo), g.fiyat].join('||');
-    (gruplar[key] = gruplar[key] || []).push(g);
-  });
-  const silinecek = new Set();
-  Object.values(gruplar).forEach(gr => {
-    if (gr.length < 2) return;
-    gr.sort((a, b) => a.id - b.id);
-    const ana = gr[0];
-    const parcalar = gr.map(g => g.miktar);
-    gr.slice(1).forEach(g => {
-      ana.miktar += g.miktar;
-      silinecek.add(g.id);
-      iadeler.forEach(k => {
-        k.breakdown.forEach(u => { if (String(u.girisRecId) === String(g.id)) u.girisRecId = ana.id; });
-        const birlesik = [];
-        k.breakdown.forEach(u => {
-          const v = birlesik.find(x => String(x.girisRecId) === String(u.girisRecId));
-          if (v) v.miktar += u.miktar; else birlesik.push(u);
-        });
-        k.breakdown = birlesik;
-      });
-    });
-    log.push(`${urunAdiByKod(ana.urunKod)} kabul ${ana.kabulNo}: ${parcalar.join(' + ')} → tek satır ${ana.miktar}`);
-  });
-  const sonuc = data.filter(k => !silinecek.has(k.id));
-  return { data: sonuc, log, hatalar };
-}
-
-async function tekSeferlikDuzeltme() {
-  const p = duzeltmeHazirla(kayitlar);
-  if (p.hatalar.length) { alert('Düzeltme yapılamadı, hiçbir şey değiştirilmedi:\n' + p.hatalar.join('\n')); return; }
-  if (!p.log.length) { showToast('✅ Düzeltilecek kayıt yok'); return; }
-  if (!confirm('Şu düzeltmeler yapılacak:\n\n• ' + p.log.join('\n• ') + '\n\nÖnce mevcut verinin yedeği indirilecek. Devam edilsin mi?')) return;
-  mevcutVeriyiYedekle();
-  kayitlar = p.data;
-  await saveData();
-  render();
-  showToast('🛠 Düzeltme tamamlandı');
 }
 
 // ---- BİR KERELİK GEÇİŞ: eski (bu güncellemeden önce oluşturulmuş) iade
