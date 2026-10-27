@@ -700,92 +700,82 @@ function buildPool() {
   return { pool, breakdownMap };
 }
 
-// ---- TEK SEFERLİK VERİ DÜZELTME (27.10.2026, v2) ----
-// A) Kopuk bağlantı: İade breakdown'ı, artık var olmayan (silinip yeniden
-//    girilmiş) bir GELEN kaydına (girisRecId) bağlıysa, aynı firma + ürün +
-//    kabul no'lu mevcut GELEN kaydına yeniden bağlanır. Aksi halde bu
-//    miktarlar FIFO havuzunda hiçbir partiden düşülmüyordu.
-// B) Fazla düşüm: Bir GELEN partisinden kendi miktarından fazla düşülmüşse,
-//    fazlalık en son tarihli iadelerden geri alınır ve aynı firma+ürün+yıl
-//    havuzundaki en eski açık partilere aktarılır.
-// C) AAA2026000007154 iadesinin tarihi 2026-08-07 -> 2026-09-07.
-// İade kayıtlarının toplam miktarları DEĞİŞMEZ. Fonksiyon idempotent:
-// düzeltilecek bir şey kalmadıysa hiçbir şey yazmaz.
+// ---- TEK SEFERLİK VERİ DÜZELTME (27.10.2026, v3 — veri kontrol raporu) ----
+// A) Fatura no'da fazla/eksik 0: 17 karakter (yıldan sonra fazladan 0) ve
+//    15 karakter (eksik 0) numaralar 16 karaktere düzeltilir.
+// B) Kullanıcının bildirdiği doğru fatura no'lar (kabul no'ya göre).
+// C) Aynı kabulde aynı ürün + aynı fiyat ile bölünmüş GELEN satırları tek
+//    satırda birleştirilir (toplam miktar aynı kalır, iadelerin bağlantıları
+//    birleşen kayda taşınır).
+// Değişiklikler GELEN kayıtlarına ve iadelerin dondurulmuş breakdown'larına
+// birlikte uygulanır. İade/gelen toplamları DEĞİŞMEZ. Fonksiyon idempotent.
+const DUZELTME_FATURA_BY_KABUL = {
+  '110323426': 'E802026000041836',
+  '110316067': 'E802026000034424'
+};
+function faturaNoOnar(f) {
+  const s = noNormalize(f);
+  let m = s.match(/^([A-Z][A-Z0-9]{2}\d{4})0(\d{9})$/);
+  if (m) return m[1] + m[2];
+  m = s.match(/^([A-Z][A-Z0-9]{2}\d{4})(\d{8})$/);
+  if (m) return m[1] + '0' + m[2];
+  return s;
+}
 function duzeltmeHazirla(kaynak) {
   const data = JSON.parse(JSON.stringify(kaynak));
   const log = [], hatalar = [];
   const gelenler = data.filter(k => k.islem === 'GELEN');
+  const iadeler = data.filter(k => k.islem === 'İADE' && Array.isArray(k.breakdown));
   const gelenById = {};
   gelenler.forEach(g => { gelenById[String(g.id)] = g; });
-  const iadeler = data.filter(k => k.islem === 'İADE' && Array.isArray(k.breakdown));
-  const yilAl = t => (t || '').slice(0, 4);
-  const havuzKey = k => String(k.firma || '').toLowerCase() + '||' + k.urunKod + '||' + yilAl(k.tarih);
-  const bagla = (u, g) => {
-    u.girisRecId = g.id; u.kabulNo = g.kabulNo || ''; u.faturaNo = g.faturaNo || '';
-    u.faturaTarihi = g.faturaTarihi || g.tarih;
-    u.fiyat = (typeof g.fiyat === 'number' && g.fiyat > 0) ? g.fiyat : urunFiyatiAl(g.urunKod);
-  };
 
-  // A) kopuk bağlantılar
-  const yeniden = {};
-  iadeler.forEach(k => k.breakdown.forEach(u => {
-    if (gelenById[String(u.girisRecId)] || !u.kabulNo) return;
-    const adaylar = gelenler.filter(g => g.urunKod === k.urunKod &&
-      String(g.firma || '').toLowerCase() === String(k.firma || '').toLowerCase() &&
-      String(g.kabulNo) === String(u.kabulNo));
-    if (adaylar.length !== 1) return; // birden fazla aday varsa tahmin etme, dokunma
-    const aday = adaylar[0];
-    bagla(u, aday);
-    const key = urunAdiByKod(k.urunKod) + ' kabul ' + aday.kabulNo;
-    yeniden[key] = (yeniden[key] || 0) + (Number(u.miktar) || 0);
-  }));
-  Object.entries(yeniden).forEach(([key, m]) => log.push(`${key}: ${m} adet silinmiş eski giriş kaydına bağlıydı → mevcut kayda bağlandı`));
-
-  // B) fazla düşüm
-  const tuketim = {};
-  iadeler.forEach(k => k.breakdown.forEach(u => {
-    tuketim[String(u.girisRecId)] = (tuketim[String(u.girisRecId)] || 0) + (Number(u.miktar) || 0);
-  }));
-  const sirali = [...gelenler].sort((a, b) => (a.tarih !== b.tarih ? (a.tarih < b.tarih ? -1 : 1) : a.id - b.id));
+  // A + B) fatura no düzeltmeleri
+  const faturaDegisim = {};
   gelenler.forEach(g => {
-    const fazlaToplam = (tuketim[String(g.id)] || 0) - g.miktar;
-    if (fazlaToplam <= 0) return;
-    let fazla = fazlaToplam;
-    const kullananlar = [];
-    iadeler.forEach(k => k.breakdown.forEach(u => { if (String(u.girisRecId) === String(g.id)) kullananlar.push({ k, u }); }));
-    kullananlar.sort((a, b) => (a.k.tarih !== b.k.tarih ? (a.k.tarih < b.k.tarih ? 1 : -1) : b.k.id - a.k.id));
-    const adaylar = sirali.filter(h => h.id !== g.id && havuzKey(h) === havuzKey(g));
-    const hedefOzet = {};
-    for (const x of kullananlar) {
-      if (fazla <= 0) break;
-      let al = Math.min(fazla, x.u.miktar);
-      x.u.miktar -= al; fazla -= al;
-      tuketim[String(g.id)] -= al;
-      for (const h of adaylar) {
-        if (al <= 0) break;
-        const acik = h.miktar - (tuketim[String(h.id)] || 0);
-        if (acik <= 0) continue;
-        const ver = Math.min(acik, al);
-        tuketim[String(h.id)] = (tuketim[String(h.id)] || 0) + ver;
-        al -= ver;
-        const mevcut = x.k.breakdown.find(v => String(v.girisRecId) === String(h.id));
-        if (mevcut) mevcut.miktar += ver;
-        else { const yeni = { miktar: ver }; bagla(yeni, h); x.k.breakdown.push(yeni); }
-        hedefOzet[h.kabulNo] = (hedefOzet[h.kabulNo] || 0) + ver;
-      }
-      if (al > 0) hatalar.push(`${g.urunKod} ${g.kabulNo}: ${al} adet için açık parti bulunamadı`);
+    const eski = g.faturaNo || '';
+    const yeni = DUZELTME_FATURA_BY_KABUL[noNormalize(g.kabulNo)] || faturaNoOnar(eski);
+    if (yeni && yeni !== eski) {
+      g.faturaNo = yeni;
+      faturaDegisim[`${g.kabulNo}: ${eski} → ${yeni}`] = true;
     }
-    log.push(`${urunAdiByKod(g.urunKod)} kabul ${g.kabulNo}: ${fazlaToplam} adet fazla düşülmüş → ` +
-      Object.entries(hedefOzet).map(([kb, m]) => `${kb} (${m})`).join(', '));
   });
-  iadeler.forEach(k => { k.breakdown = k.breakdown.filter(u => u.miktar > 0); });
+  iadeler.forEach(k => k.breakdown.forEach(u => {
+    const g = gelenById[String(u.girisRecId)];
+    if (g && u.faturaNo !== g.faturaNo) u.faturaNo = g.faturaNo;
+  }));
+  const fd = Object.keys(faturaDegisim);
+  if (fd.length) log.push(`Fatura no düzeltmesi (${fd.length} kabul):\n    ` + fd.join('\n    '));
 
-  // C) tarih
-  const tarihDuzelt = data.filter(k => k.islem === 'İADE' && k.iadeReferansNo === 'AAA2026000007154' && k.tarih === '2026-08-07');
-  tarihDuzelt.forEach(k => { k.tarih = '2026-09-07'; });
-  if (tarihDuzelt.length) log.push(`AAA2026000007154 iadesi (${tarihDuzelt.length} kalem): tarih 07.08.2026 → 07.09.2026`);
-
-  return { data, log, hatalar };
+  // C) bölünmüş satırları birleştir
+  const gruplar = {};
+  gelenler.forEach(g => {
+    if (!g.kabulNo) return;
+    const key = [String(g.firma || '').toLowerCase().trim(), g.urunKod, noNormalize(g.kabulNo), noNormalize(g.faturaNo), g.fiyat].join('||');
+    (gruplar[key] = gruplar[key] || []).push(g);
+  });
+  const silinecek = new Set();
+  Object.values(gruplar).forEach(gr => {
+    if (gr.length < 2) return;
+    gr.sort((a, b) => a.id - b.id);
+    const ana = gr[0];
+    const parcalar = gr.map(g => g.miktar);
+    gr.slice(1).forEach(g => {
+      ana.miktar += g.miktar;
+      silinecek.add(g.id);
+      iadeler.forEach(k => {
+        k.breakdown.forEach(u => { if (String(u.girisRecId) === String(g.id)) u.girisRecId = ana.id; });
+        const birlesik = [];
+        k.breakdown.forEach(u => {
+          const v = birlesik.find(x => String(x.girisRecId) === String(u.girisRecId));
+          if (v) v.miktar += u.miktar; else birlesik.push(u);
+        });
+        k.breakdown = birlesik;
+      });
+    });
+    log.push(`${urunAdiByKod(ana.urunKod)} kabul ${ana.kabulNo}: ${parcalar.join(' + ')} → tek satır ${ana.miktar}`);
+  });
+  const sonuc = data.filter(k => !silinecek.has(k.id));
+  return { data: sonuc, log, hatalar };
 }
 
 async function tekSeferlikDuzeltme() {
