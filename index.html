@@ -699,108 +699,101 @@ function buildPool() {
   return { pool, breakdownMap };
 }
 
-// ---- TEK SEFERLİK VERİ DÜZELTME (27.10.2026) ----
-// 1) Bir GELEN partisinden, partinin kendi miktarından FAZLA düşülmüş
-//    (dondurulmuş breakdown'larda) iade varsa: fazlalık en son tarihli iadelerden
-//    geri alınır ve aynı firma+ürün+yıl havuzundaki en eski açık partilere aktarılır.
-//    (Örn. TAHTA PALET ALT 110318273: 15 gelen / 35 iade düşülmüştü.)
-//    İade kayıtlarının toplam miktarı DEĞİŞMEZ, sadece hangi kabulden düştüğü düzelir.
-// 2) AAA2026000007154 iadesinin tarihi 2026-08-07 -> 2026-09-07 (ay yanlış yazılmıştı).
-// Fonksiyon idempotent: düzeltilecek bir şey kalmadıysa hiçbir şey yazmaz.
-function veriDuzeltmePlani() {
-  const gelenler = kayitlar.filter(k => k.islem === 'GELEN');
-  const iadeler = kayitlar.filter(k => k.islem === 'İADE' && Array.isArray(k.breakdown));
+// ---- TEK SEFERLİK VERİ DÜZELTME (27.10.2026, v2) ----
+// A) Kopuk bağlantı: İade breakdown'ı, artık var olmayan (silinip yeniden
+//    girilmiş) bir GELEN kaydına (girisRecId) bağlıysa, aynı firma + ürün +
+//    kabul no'lu mevcut GELEN kaydına yeniden bağlanır. Aksi halde bu
+//    miktarlar FIFO havuzunda hiçbir partiden düşülmüyordu.
+// B) Fazla düşüm: Bir GELEN partisinden kendi miktarından fazla düşülmüşse,
+//    fazlalık en son tarihli iadelerden geri alınır ve aynı firma+ürün+yıl
+//    havuzundaki en eski açık partilere aktarılır.
+// C) AAA2026000007154 iadesinin tarihi 2026-08-07 -> 2026-09-07.
+// İade kayıtlarının toplam miktarları DEĞİŞMEZ. Fonksiyon idempotent:
+// düzeltilecek bir şey kalmadıysa hiçbir şey yazmaz.
+function duzeltmeHazirla(kaynak) {
+  const data = JSON.parse(JSON.stringify(kaynak));
+  const log = [], hatalar = [];
+  const gelenler = data.filter(k => k.islem === 'GELEN');
+  const gelenById = {};
+  gelenler.forEach(g => { gelenById[String(g.id)] = g; });
+  const iadeler = data.filter(k => k.islem === 'İADE' && Array.isArray(k.breakdown));
   const yilAl = t => (t || '').slice(0, 4);
-  const havuzKey = k => k.firma.toLowerCase() + '||' + k.urunKod + '||' + yilAl(k.tarih);
+  const havuzKey = k => String(k.firma || '').toLowerCase() + '||' + k.urunKod + '||' + yilAl(k.tarih);
+  const bagla = (u, g) => {
+    u.girisRecId = g.id; u.kabulNo = g.kabulNo || ''; u.faturaNo = g.faturaNo || '';
+    u.faturaTarihi = g.faturaTarihi || g.tarih;
+    u.fiyat = (typeof g.fiyat === 'number' && g.fiyat > 0) ? g.fiyat : urunFiyatiAl(g.urunKod);
+  };
 
+  // A) kopuk bağlantılar
+  const yeniden = {};
+  iadeler.forEach(k => k.breakdown.forEach(u => {
+    if (gelenById[String(u.girisRecId)] || !u.kabulNo) return;
+    const adaylar = gelenler.filter(g => g.urunKod === k.urunKod &&
+      String(g.firma || '').toLowerCase() === String(k.firma || '').toLowerCase() &&
+      String(g.kabulNo) === String(u.kabulNo));
+    if (adaylar.length !== 1) return; // birden fazla aday varsa tahmin etme, dokunma
+    const aday = adaylar[0];
+    bagla(u, aday);
+    const key = urunAdiByKod(k.urunKod) + ' kabul ' + aday.kabulNo;
+    yeniden[key] = (yeniden[key] || 0) + (Number(u.miktar) || 0);
+  }));
+  Object.entries(yeniden).forEach(([key, m]) => log.push(`${key}: ${m} adet silinmiş eski giriş kaydına bağlıydı → mevcut kayda bağlandı`));
+
+  // B) fazla düşüm
   const tuketim = {};
   iadeler.forEach(k => k.breakdown.forEach(u => {
-    tuketim[u.girisRecId] = (tuketim[u.girisRecId] || 0) + (Number(u.miktar) || 0);
+    tuketim[String(u.girisRecId)] = (tuketim[String(u.girisRecId)] || 0) + (Number(u.miktar) || 0);
   }));
-
-  const islemler = [];
-  const hatalar = [];
+  const sirali = [...gelenler].sort((a, b) => (a.tarih !== b.tarih ? (a.tarih < b.tarih ? -1 : 1) : a.id - b.id));
   gelenler.forEach(g => {
-    let fazla = (tuketim[g.id] || 0) - g.miktar;
-    if (fazla <= 0) return;
+    const fazlaToplam = (tuketim[String(g.id)] || 0) - g.miktar;
+    if (fazlaToplam <= 0) return;
+    let fazla = fazlaToplam;
     const kullananlar = [];
-    iadeler.forEach(k => k.breakdown.forEach((u, i) => {
-      if (u.girisRecId === g.id) kullananlar.push({ k, i, u });
-    }));
+    iadeler.forEach(k => k.breakdown.forEach(u => { if (String(u.girisRecId) === String(g.id)) kullananlar.push({ k, u }); }));
     kullananlar.sort((a, b) => (a.k.tarih !== b.k.tarih ? (a.k.tarih < b.k.tarih ? 1 : -1) : b.k.id - a.k.id));
-    const geriAlinan = [];
+    const adaylar = sirali.filter(h => h.id !== g.id && havuzKey(h) === havuzKey(g));
+    const hedefOzet = {};
     for (const x of kullananlar) {
       if (fazla <= 0) break;
-      const al = Math.min(fazla, x.u.miktar);
-      geriAlinan.push({ k: x.k, i: x.i, miktar: al });
-      fazla -= al;
-    }
-    islemler.push({ gelen: g, geriAlinan, fazla: (tuketim[g.id] || 0) - g.miktar });
-  });
-
-  // hedef partiler: aynı havuzdaki en eski açık partiler
-  islemler.forEach(op => {
-    const key = havuzKey(op.gelen);
-    const adaylar = gelenler
-      .filter(g => g.id !== op.gelen.id && havuzKey(g) === key)
-      .sort((a, b) => (a.tarih !== b.tarih ? (a.tarih < b.tarih ? -1 : 1) : a.id - b.id));
-    op.atamalar = [];
-    for (const ga of op.geriAlinan) {
-      let need = ga.miktar;
+      let al = Math.min(fazla, x.u.miktar);
+      x.u.miktar -= al; fazla -= al;
+      tuketim[String(g.id)] -= al;
       for (const h of adaylar) {
-        if (need <= 0) break;
-        const acik = h.miktar - (tuketim[h.id] || 0);
+        if (al <= 0) break;
+        const acik = h.miktar - (tuketim[String(h.id)] || 0);
         if (acik <= 0) continue;
-        const al = Math.min(acik, need);
-        tuketim[h.id] = (tuketim[h.id] || 0) + al;
-        need -= al;
-        op.atamalar.push({ k: ga.k, hedef: h, miktar: al });
+        const ver = Math.min(acik, al);
+        tuketim[String(h.id)] = (tuketim[String(h.id)] || 0) + ver;
+        al -= ver;
+        const mevcut = x.k.breakdown.find(v => String(v.girisRecId) === String(h.id));
+        if (mevcut) mevcut.miktar += ver;
+        else { const yeni = { miktar: ver }; bagla(yeni, h); x.k.breakdown.push(yeni); }
+        hedefOzet[h.kabulNo] = (hedefOzet[h.kabulNo] || 0) + ver;
       }
-      if (need > 0) hatalar.push(`${op.gelen.urunKod} ${op.gelen.kabulNo}: ${need} adet için açık parti bulunamadı`);
+      if (al > 0) hatalar.push(`${g.urunKod} ${g.kabulNo}: ${al} adet için açık parti bulunamadı`);
     }
+    log.push(`${urunAdiByKod(g.urunKod)} kabul ${g.kabulNo}: ${fazlaToplam} adet fazla düşülmüş → ` +
+      Object.entries(hedefOzet).map(([kb, m]) => `${kb} (${m})`).join(', '));
   });
+  iadeler.forEach(k => { k.breakdown = k.breakdown.filter(u => u.miktar > 0); });
 
-  const tarihDuzelt = kayitlar.filter(k => k.islem === 'İADE' && k.iadeReferansNo === 'AAA2026000007154' && k.tarih === '2026-08-07');
-  return { islemler, tarihDuzelt, hatalar };
+  // C) tarih
+  const tarihDuzelt = data.filter(k => k.islem === 'İADE' && k.iadeReferansNo === 'AAA2026000007154' && k.tarih === '2026-08-07');
+  tarihDuzelt.forEach(k => { k.tarih = '2026-09-07'; });
+  if (tarihDuzelt.length) log.push(`AAA2026000007154 iadesi (${tarihDuzelt.length} kalem): tarih 07.08.2026 → 07.09.2026`);
+
+  return { data, log, hatalar };
 }
 
 async function tekSeferlikDuzeltme() {
-  const plan = veriDuzeltmePlani();
-  if (plan.hatalar.length) { alert('Düzeltme yapılamadı:\n' + plan.hatalar.join('\n')); return; }
-  if (!plan.islemler.length && !plan.tarihDuzelt.length) { showToast('✅ Düzeltilecek kayıt yok'); return; }
-
-  let ozet = 'Şu düzeltmeler yapılacak:\n\n';
-  plan.islemler.forEach(op => {
-    ozet += `• ${urunAdiByKod(op.gelen.urunKod)} kabul ${op.gelen.kabulNo}: ${op.fazla} adet fazla düşülmüş → `;
-    const hedef = {};
-    op.atamalar.forEach(a => { hedef[a.hedef.kabulNo] = (hedef[a.hedef.kabulNo] || 0) + a.miktar; });
-    ozet += Object.entries(hedef).map(([kb, m]) => `${kb} (${m})`).join(', ') + '\n';
-  });
-  if (plan.tarihDuzelt.length) ozet += `• AAA2026000007154 iadesi (${plan.tarihDuzelt.length} kalem): tarih 07.08.2026 → 07.09.2026\n`;
-  ozet += '\nÖnce mevcut verinin yedeği indirilecek. Devam edilsin mi?';
-  if (!confirm(ozet)) return;
-
+  const p = duzeltmeHazirla(kayitlar);
+  if (p.hatalar.length) { alert('Düzeltme yapılamadı, hiçbir şey değiştirilmedi:\n' + p.hatalar.join('\n')); return; }
+  if (!p.log.length) { showToast('✅ Düzeltilecek kayıt yok'); return; }
+  if (!confirm('Şu düzeltmeler yapılacak:\n\n• ' + p.log.join('\n• ') + '\n\nÖnce mevcut verinin yedeği indirilecek. Devam edilsin mi?')) return;
   mevcutVeriyiYedekle();
-
-  plan.islemler.forEach(op => {
-    op.geriAlinan.forEach(ga => { ga.k.breakdown[ga.i].miktar -= ga.miktar; });
-    op.atamalar.forEach(a => {
-      const h = a.hedef;
-      const var_ = a.k.breakdown.find(u => u.girisRecId === h.id);
-      if (var_) var_.miktar += a.miktar;
-      else a.k.breakdown.push({
-        girisRecId: h.id, kabulNo: h.kabulNo || '', faturaNo: h.faturaNo || '',
-        faturaTarihi: h.faturaTarihi || h.tarih,
-        fiyat: (typeof h.fiyat === 'number' && h.fiyat > 0) ? h.fiyat : urunFiyatiAl(h.urunKod),
-        miktar: a.miktar
-      });
-    });
-  });
-  kayitlar.forEach(k => {
-    if (k.islem === 'İADE' && Array.isArray(k.breakdown)) k.breakdown = k.breakdown.filter(u => u.miktar > 0);
-  });
-  plan.tarihDuzelt.forEach(k => { k.tarih = '2026-09-07'; });
-
+  kayitlar = p.data;
   await saveData();
   render();
   showToast('🛠 Düzeltme tamamlandı');
